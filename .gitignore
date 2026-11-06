@@ -1,0 +1,6 @@
+/target
+.cargo
+stremio_src
+/spec-docs
+/vendor
+/test

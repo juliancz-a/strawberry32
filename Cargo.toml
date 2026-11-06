@@ -1,0 +1,50 @@
+[package]
+name = "streaming-app-arm32"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Controls",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_Graphics_Gdi",
+    "Win32_Networking_WinSock",
+    "Win32_System_Threading",
+    "Win32_System_IO",
+    "Win32_Storage_FileSystem",
+    "Win32_Security",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Console",
+    "Win32_System_SystemInformation",
+]}
+ureq = { version = "2.9", default-features = false, features = ["native-tls", "json"] }
+native-tls = "0.2"
+
+# Motor de Torrents en Rust puro con streaming HTTP Range integrado
+librqbit = { version = "8.0", default-features = false, features = ["default-tls", "http-api", "tracing-subscriber-utils"] }
+
+# Tokio runtime para coordinar el motor de torrents y streaming HTTP
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "net", "macros"] }
+
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = "1.0"
+anyhow = "1.0"
+encoding_rs = "0.8"
+slint = { version = "1.9", default-features = false, features = ["compat-1-2", "std", "backend-winit", "renderer-software", "raw-window-handle-06"] }
+raw-window-handle = "0.6"
+
+# Optimización para el procesador Tegra 3/4 y poca RAM
+[profile.release]
+opt-level = "z"     # Optimiza para tamaño de binario y caché de CPU
+lto = true          # Link-Time Optimization
+codegen-units = 1
+panic = "abort"
+strip = true        # Limpia símbolos de debug (reduce el .exe de ~25MB a ~5MB)
+
+[patch.crates-io]
+windows-sys = { path = "vendor/windows-sys-0.61" }
+windows-sys-52 = { package = "windows-sys", path = "vendor/windows-sys-0.52" }
+windows = { path = "vendor/windows-0.62" }
