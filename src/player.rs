@@ -302,6 +302,55 @@ pub fn seek_relative(seconds: i32) -> Result<(), String> {
     }
 }
 
+/// Returns (pos_ms, dur_ms, progress_ratio)
+pub fn get_playback_progress() -> (u64, u64, f32) {
+    let guard = EMBEDDED_PLAYER.lock().unwrap();
+    if let Some(state) = guard.as_ref() {
+        unsafe {
+            if !state.p_player.is_null() {
+                let mut pv_cur: PROPVARIANT = std::mem::zeroed();
+                let mut pv_dur: PROPVARIANT = std::mem::zeroed();
+                let hr_cur = com_call_2(state.p_player, 8, &GUID_NULL as *const GUID as *const c_void, &mut pv_cur as *mut PROPVARIANT as *mut c_void);
+                let hr_dur = com_call_2(state.p_player, 9, &GUID_NULL as *const GUID as *const c_void, &mut pv_dur as *mut PROPVARIANT as *mut c_void);
+                if hr_cur >= 0 && hr_dur >= 0 && pv_dur.hVal > 0 {
+                    let pos_ms = (pv_cur.hVal.max(0) / 10_000) as u64;
+                    let dur_ms = (pv_dur.hVal.max(0) / 10_000) as u64;
+                    let ratio = (pv_cur.hVal as f64 / pv_dur.hVal as f64).clamp(0.0, 1.0) as f32;
+                    return (pos_ms, dur_ms, ratio);
+                }
+            }
+        }
+    }
+    (0, 0, 0.0)
+}
+
+/// Seeks to absolute percentage (0.0 to 1.0)
+pub fn seek_percent(pct: f32) -> Result<(), String> {
+    let guard = EMBEDDED_PLAYER.lock().unwrap();
+    if let Some(state) = guard.as_ref() {
+        unsafe {
+            if state.p_player.is_null() {
+                return Err("MF player controller not available".to_string());
+            }
+            let mut pv_dur: PROPVARIANT = std::mem::zeroed();
+            let _ = com_call_2(state.p_player, 9, &GUID_NULL as *const GUID as *const c_void, &mut pv_dur as *mut PROPVARIANT as *mut c_void);
+            let dur_100ns = pv_dur.hVal;
+            if dur_100ns <= 0 {
+                return Err("Unknown duration".to_string());
+            }
+            let target_100ns = ((dur_100ns as f64) * (pct.clamp(0.0, 1.0) as f64)) as i64;
+            let mut pv_new = PROPVARIANT::default();
+            pv_new.vt = 20; // VT_I8
+            pv_new.hVal = target_100ns;
+            let _ = com_call_2(state.p_player, 7, &GUID_NULL as *const GUID as *const c_void, &pv_new as *const PROPVARIANT as *const c_void);
+            log_player(&format!("Seeked to percent: {:.1}%", pct * 100.0));
+            Ok(())
+        }
+    } else {
+        Err("No active player".to_string())
+    }
+}
+
 /// Toggles full-screen mode flag
 pub fn toggle_fullscreen() -> Result<bool, String> {
     let mut guard = EMBEDDED_PLAYER.lock().unwrap();

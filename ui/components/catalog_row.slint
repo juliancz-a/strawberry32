@@ -1,0 +1,104 @@
+import { Theme } from "../theme.slint";
+import { PosterCard } from "poster_card.slint";
+
+export struct CatalogItem {
+    id: string,
+    title: string,
+    year: string,
+    item_type: string,
+    poster: image,
+    has_poster: bool,
+}
+
+component ChevronButton inherits Rectangle {
+    in property <string> text: "";
+    callback clicked();
+
+    width: 34px;
+    height: 28px;
+    horizontal-stretch: 0;
+    border-radius: 6px;
+    background: touch.pressed ? Theme.accent : (touch.has-hover ? #2a2b2e : #1c1d20);
+    border-width: 1px;
+    border-color: touch.has-hover ? #505258 : #333438;
+
+    touch := TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => { root.clicked(); }
+    }
+
+    Text {
+        text: root.text;
+        color: #ffffff;
+        font-size: 13px;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+export component CatalogRow inherits VerticalLayout {
+    in property <string> title: "Catalog Row";
+    in property <[CatalogItem]> items: [];
+
+    callback card_clicked(string, string);
+
+    spacing: 8px;
+
+    // Row Header with title and compact modern chevrons
+    HorizontalLayout {
+        alignment: space-between;
+
+        Text {
+            text: root.title;
+            font-size: 15px;
+            font-weight: 700;
+            color: Theme.text;
+            vertical-alignment: center;
+        }
+
+        HorizontalLayout {
+            spacing: 6px;
+            alignment: end;
+
+            ChevronButton {
+                text: "◀";
+                clicked => {
+                    flick.content-x = min(0px, flick.content-x + 468px);
+                }
+            }
+
+            ChevronButton {
+                text: "▶";
+                clicked => {
+                    flick.content-x = max(- (root.items.length * 156px - flick.width), flick.content-x - 468px);
+                }
+            }
+        }
+    }
+
+    // Scrollable Row of Poster Cards (horizontal scrolling)
+    flick := Flickable {
+        height: 255px;
+        content-width: root.items.length * 156px;
+        content-height: self.height;
+
+        HorizontalLayout {
+            spacing: 10px;
+
+            for item in root.items : PosterCard {
+                id: item.id;
+                title: item.title;
+                year: item.year;
+                item_type: item.item_type;
+                poster: item.poster;
+                has_poster: item.has_poster;
+
+                clicked(id, type) => {
+                    root.card_clicked(id, type);
+                }
+            }
+        }
+    }
+}

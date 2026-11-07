@@ -74,6 +74,18 @@ pub fn create_agent() -> Result<ureq::Agent, String> {
     Ok(agent)
 }
 
+static SHARED_AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+
+/// Returns a shared, pooled ureq agent reusing Schannel TLS sessions and keep-alive TCP connections
+pub fn get_shared_agent() -> &'static ureq::Agent {
+    SHARED_AGENT.get_or_init(|| {
+        create_agent().unwrap_or_else(|e| {
+            log_err(&format!("Falling back in get_shared_agent: {}", e));
+            ureq::AgentBuilder::new().build()
+        })
+    })
+}
+
 /// Simple percent-encoder for search terms and tracker URLs
 pub fn percent_encode(s: &str) -> String {
     let mut res = String::with_capacity(s.len() * 2);

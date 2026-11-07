@@ -1,0 +1,255 @@
+import { Theme } from "../theme.slint";
+
+component OverlayButton inherits Rectangle {
+    in property <string> text: "";
+    callback clicked();
+
+    height: 34px;
+    min-width: 44px;
+    border-radius: 6px;
+    background: touch.pressed ? Theme.accent : (touch.has-hover ? #2a2b2e : #1c1d20);
+    border-width: 1px;
+    border-color: touch.has-hover ? #505258 : #333438;
+
+    touch := TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        alignment: center;
+
+        Text {
+            text: root.text;
+            color: touch.pressed ? #ffffff : (touch.has-hover ? #ffffff : #e0e0e0);
+            font-size: 13px;
+            font-weight: 700;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
+}
+
+export component PlayerOverlay inherits Window {
+    no-frame: true;
+    background: #00000000;
+
+    in-out property <string> title_text: "Strawberry32 Player";
+    in-out property <string> time_str: "00:00 / 00:00";
+    in-out property <bool> controls_visible: true;
+    in-out property <bool> is_paused: false;
+    in-out property <bool> is_fullscreen: false;
+    in-out property <string> subtitle_text: "";
+    in-out property <float> progress: 0.0; // 0.0 to 1.0
+
+    callback play_pause_clicked();
+    callback seek_relative(int);
+    callback seek_percent(float);
+    callback close_clicked();
+    callback toggle_fullscreen_clicked();
+    callback cycle_subtitles();
+    callback user_activity();
+
+    // Top control bar (solid opaque #101011, height 50px)
+    if controls_visible : Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 50px;
+        background: #101011;
+
+        top_touch := TouchArea {
+            width: 100%;
+            height: 100%;
+            pointer-event(event) => {
+                root.user_activity();
+            }
+        }
+
+        HorizontalLayout {
+            padding-left: 14px;
+            padding-right: 14px;
+            spacing: 12px;
+            alignment: space-between;
+
+            HorizontalLayout {
+                spacing: 12px;
+                alignment: center;
+
+                OverlayButton {
+                    text: "← Back";
+                    clicked => {
+                        root.user_activity();
+                        root.close_clicked();
+                    }
+                }
+
+                Text {
+                    text: root.title_text;
+                    color: Theme.text;
+                    font-size: 15px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: center;
+
+                OverlayButton {
+                    text: root.is_fullscreen ? "Restore" : "Fullscreen";
+                    clicked => {
+                        root.user_activity();
+                        root.toggle_fullscreen_clicked();
+                    }
+                }
+            }
+        }
+    }
+
+    // Subtitle rendering box (opaque background so text is crisp and clean)
+    if root.subtitle_text != "" : Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: parent.height - (root.controls_visible ? 136px : 68px);
+        width: sub_label.width + 24px;
+        height: sub_label.height + 12px;
+        background: #000000e0;
+        border-radius: 4px;
+
+        sub_label := Text {
+            text: root.subtitle_text;
+            color: #FFFF55;
+            font-size: 18px;
+            font-weight: 700;
+            horizontal-alignment: center;
+        }
+    }
+
+    // Bottom transport bar (solid opaque #101011, height 74px)
+    if controls_visible : Rectangle {
+        x: 0px;
+        y: parent.height - 74px;
+        width: 100%;
+        height: 74px;
+        background: #101011;
+
+        bottom_touch := TouchArea {
+            width: 100%;
+            height: 100%;
+            pointer-event(event) => {
+                root.user_activity();
+            }
+        }
+
+        VerticalLayout {
+            padding-left: 14px;
+            padding-right: 14px;
+            padding-top: 6px;
+            padding-bottom: 6px;
+            spacing: 6px;
+
+            // Interactive seek bar with hover & playhead indicator
+            seek_bar := Rectangle {
+                height: 14px;
+                background: #252627;
+                border-radius: 4px;
+
+                // Buffered/Played progress fill
+                Rectangle {
+                    x: 0px;
+                    y: 3px;
+                    height: seek_touch.has-hover ? 10px : 8px;
+                    width: parent.width * max(0.0, min(1.0, root.progress));
+                    background: Theme.accent;
+                    border-radius: 3px;
+                }
+
+                // Playhead circle indicator
+                Rectangle {
+                    x: max(0px, min(parent.width - 12px, parent.width * max(0.0, min(1.0, root.progress)) - 6px));
+                    y: 1px;
+                    width: 12px;
+                    height: 12px;
+                    border-radius: 6px;
+                    background: #ffffff;
+                    border-width: 1px;
+                    border-color: Theme.accent;
+                }
+
+                seek_touch := TouchArea {
+                    width: 100%;
+                    height: 100%;
+                    pointer-event(event) => {
+                        root.user_activity();
+                    }
+                    clicked => {
+                        root.user_activity();
+                        if (self.width > 0px) {
+                            root.seek_percent(self.mouse-x / self.width);
+                        }
+                    }
+                }
+            }
+
+            // Transport buttons row (all 44px+ touch targets, custom dark buttons)
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: center;
+
+                OverlayButton {
+                    text: "-15s";
+                    clicked => {
+                        root.user_activity();
+                        root.seek_relative(-15);
+                    }
+                }
+
+                OverlayButton {
+                    min-width: 70px;
+                    text: root.is_paused ? "▶ Play" : "⏸ Pause";
+                    clicked => {
+                        root.user_activity();
+                        root.play_pause_clicked();
+                    }
+                }
+
+                OverlayButton {
+                    text: "+30s";
+                    clicked => {
+                        root.user_activity();
+                        root.seek_relative(30);
+                    }
+                }
+
+                Text {
+                    text: root.time_str;
+                    color: Theme.text;
+                    font-size: 13px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+
+                OverlayButton {
+                    text: "Subtitles";
+                    clicked => {
+                        root.user_activity();
+                        root.cycle_subtitles();
+                    }
+                }
+
+                OverlayButton {
+                    text: root.is_fullscreen ? "Restore" : "Fullscreen";
+                    clicked => {
+                        root.user_activity();
+                        root.toggle_fullscreen_clicked();
+                    }
+                }
+            }
+        }
+    }
+}

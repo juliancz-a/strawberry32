@@ -33,8 +33,12 @@ serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 anyhow = "1.0"
 encoding_rs = "0.8"
-slint = { version = "1.9", default-features = false, features = ["compat-1-2", "std", "backend-winit", "renderer-software", "raw-window-handle-06"] }
+slint = { version = "1.18", default-features = false, features = ["compat-1-18", "std", "backend-winit", "renderer-software", "raw-window-handle-06"] }
 raw-window-handle = "0.6"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+
+[build-dependencies]
+slint-build = { version = "1.18", default-features = false, features = ["compat-1-18"] }
 
 # Optimización para el procesador Tegra 3/4 y poca RAM
 [profile.release]
@@ -43,6 +47,15 @@ lto = true          # Link-Time Optimization
 codegen-units = 1
 panic = "abort"
 strip = true        # Limpia símbolos de debug (reduce el .exe de ~25MB a ~5MB)
+
+[profile.release.package.image]
+opt-level = 3
+[profile.release.package.png]
+opt-level = 3
+[profile.release.package.miniz_oxide]
+opt-level = 3
+[profile.release.package.fdeflate]
+opt-level = 3
 
 [patch.crates-io]
 windows-sys = { path = "vendor/windows-sys-0.61" }

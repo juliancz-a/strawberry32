@@ -1,0 +1,688 @@
+import { Theme } from "theme.slint";
+import { PlayerOverlay } from "overlay/player_overlay.slint";
+import { PosterCard } from "components/poster_card.slint";
+import { CatalogRow, CatalogItem } from "components/catalog_row.slint";
+import { Button, LineEdit, ScrollView } from "std-widgets.slint";
+
+export { Theme, PlayerOverlay, CatalogItem }
+
+export struct StreamItem {
+    idx: int,
+    display_title: string,
+    badge: string,
+    badge_color: color,
+    quality: string,
+    size: string,
+    seeders: int,
+    is_mp4: bool,
+}
+
+export component MainWindow inherits Window {
+    preferred-width: 960px;
+    preferred-height: 640px;
+    min-width: 640px;
+    min-height: 480px;
+    title: "Strawberry32 - Surface RT (ARM32)";
+    background: Theme.bg;
+
+    // View state: 0 = Catalog, 1 = Detail, 2 = Player, 3 = Image Spike (60 cards)
+    in-out property <int> current_view: 0;
+
+    // Top Bar properties
+    in-out property <string> search_text: "";
+    in-out property <string> active_filter: "all";
+    in-out property <string> status_text: "Ready. Click Quick Setup or Search.";
+
+    // Catalog Model
+    in-out property <[CatalogItem]> catalog_items: [];
+    in-out property <bool> is_catalog_loading: false;
+
+    // Image Spike Model (3 rows x 20 cards = 60 items)
+    in-out property <[CatalogItem]> spike_row1: [];
+    in-out property <[CatalogItem]> spike_row2: [];
+    in-out property <[CatalogItem]> spike_row3: [];
+    in-out property <string> spike_fps_text: "FPS: -- | RAM: -- MB";
+
+    // Detail Model
+    in-out property <string> detail_id: "";
+    in-out property <string> detail_title: "";
+    in-out property <string> detail_type: "";
+    in-out property <string> detail_year: "";
+    in-out property <string> detail_desc: "";
+    in-out property <bool> detail_is_series: false;
+    in-out property <string> series_season: "1";
+    in-out property <string> series_episode: "1";
+    in-out property <[StreamItem]> stream_items: [];
+    in-out property <bool> is_streams_loading: false;
+
+    // Player View Model
+    in-out property <bool> is_player_loading: false;
+    in-out property <string> player_title: "";
+    in-out property <string> player_status_msg: "";
+    in-out property <string> player_peers_str: "";
+    in-out property <string> player_speed_str: "";
+    in-out property <string> player_progress_str: "";
+    in-out property <string> time_str: "--:-- / --:--";
+    in-out property <string> subtitle_text: "";
+    in-out property <bool> is_paused: false;
+    in-out property <bool> is_fullscreen: false;
+    in-out property <bool> overlay_failed: false;
+
+    // Diagnostic Logs Drawer
+    in-out property <bool> logs_visible: false;
+    in-out property <[string]> log_lines: [];
+
+    // Callbacks to Rust
+    callback search_submitted(string);
+    callback filter_clicked(string);
+    callback quick_dev_setup();
+    callback run_image_spike();
+    callback toggle_logs();
+    callback clear_logs();
+
+    callback card_selected(string);
+    callback back_to_catalog();
+    callback fetch_episode_streams(string, string, string);
+
+    callback play_stream_clicked(int);
+    callback play_vlc_clicked(int);
+
+    callback player_back();
+    callback player_play_pause();
+    callback player_seek_backward();
+    callback player_seek_forward();
+    callback player_cycle_subtitles();
+    callback player_toggle_fullscreen();
+    callback player_open_vlc();
+    callback handle_key_escape();
+
+    forward-focus: main_focus;
+    main_focus := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.handle_key_escape();
+                return accept;
+            }
+            if (event.text == "f" || event.text == "F" || event.text == Key.F11) {
+                root.player_toggle_fullscreen();
+                return accept;
+            }
+            if (event.text == " ") {
+                root.player_play_pause();
+                return accept;
+            }
+            if (event.text == Key.LeftArrow) {
+                root.player_seek_backward();
+                return accept;
+            }
+            if (event.text == Key.RightArrow) {
+                root.player_seek_forward();
+                return accept;
+            }
+            return reject;
+        }
+
+        VerticalLayout {
+            padding: 0px;
+            spacing: 0px;
+
+        // TOP NAVIGATION BAR (Visible in Catalog & Detail views)
+        if root.current_view != 2: Rectangle {
+            height: 56px;
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.surface-raised;
+
+            HorizontalLayout {
+                padding-left: 14px;
+                padding-right: 14px;
+                padding-top: 8px;
+                padding-bottom: 8px;
+                spacing: 10px;
+
+                // Brand title with Wild Strawberry accent
+                Text {
+                    text: "🍓 STRAWBERRY32";
+                    font-size: 16px;
+                    font-weight: 800;
+                    color: Theme.accent;
+                    vertical-alignment: center;
+                }
+
+                // Search input
+                search_edit := LineEdit {
+                    width: 180px;
+                    placeholder-text: "Search movies or series...";
+                    text <=> root.search_text;
+                    accepted => { root.search_submitted(self.text); }
+                }
+
+                Button {
+                    text: "🔍 Search";
+                    clicked => { root.search_submitted(root.search_text); }
+                }
+
+                // Filter chips
+                Button {
+                    text: root.active_filter == "all" ? "• All •" : "All";
+                    clicked => { root.filter_clicked("all"); }
+                }
+
+                Button {
+                    text: root.active_filter == "movie" ? "• Movies •" : "Movies";
+                    clicked => { root.filter_clicked("movie"); }
+                }
+
+                Button {
+                    text: root.active_filter == "series" ? "• Series •" : "Series";
+                    clicked => { root.filter_clicked("series"); }
+                }
+
+                // Quick load dev button
+                Button {
+                    text: "⚡ Quick Setup";
+                    clicked => { root.quick_dev_setup(); }
+                }
+
+                // Logs toggle button
+                Button {
+                    text: root.logs_visible ? "⚙ Hide Logs" : "⚙ Logs";
+                    clicked => { root.toggle_logs(); }
+                }
+            }
+        }
+
+        // STATUS SUB-BAR (Catalog & Detail)
+        if root.current_view != 2: Rectangle {
+            height: 24px;
+            background: Theme.bg;
+            HorizontalLayout {
+                padding-left: 14px;
+                padding-right: 14px;
+                Text {
+                    text: root.status_text;
+                    font-size: 11px;
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // VIEW 0: MULTI-ROW CATALOG VIEW (Stremio / Nuvio Style)
+        if root.current_view == 0: Rectangle {
+            background: Theme.bg;
+
+            if root.is_catalog_loading: Text {
+                text: "Loading catalog from Cinemeta...";
+                font-size: 16px;
+                color: Theme.text-muted;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            if !root.is_catalog_loading && root.catalog_items.length == 0 && root.spike_row1.length == 0: VerticalLayout {
+                alignment: center;
+                spacing: 12px;
+                Text {
+                    text: "No titles loaded yet.";
+                    font-size: 18px;
+                    font-weight: 700;
+                    color: Theme.text;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: "Click [⚡ Quick Setup] to load Cinemeta + Torrentio, or enter a search query.";
+                    font-size: 13px;
+                    color: Theme.text-muted;
+                    horizontal-alignment: center;
+                }
+            }
+
+            if !root.is_catalog_loading && (root.catalog_items.length > 0 || root.spike_row1.length > 0): ScrollView {
+                VerticalLayout {
+                    padding: 14px;
+                    spacing: 18px;
+
+                    // If user searched or filtered with dedicated items
+                    if root.search_text != "" && root.catalog_items.length > 0: CatalogRow {
+                        title: "Search Results for \"" + root.search_text + "\"";
+                        items: root.catalog_items;
+                        card_clicked(id, type) => { root.card_selected(id); }
+                    }
+
+                    // Multi-Row Home Catalog
+                    if root.spike_row1.length > 0: CatalogRow {
+                        title: "Popular Movies";
+                        items: root.spike_row1;
+                        card_clicked(id, type) => { root.card_selected(id); }
+                    }
+
+                    if root.spike_row2.length > 0: CatalogRow {
+                        title: "Trending Series";
+                        items: root.spike_row2;
+                        card_clicked(id, type) => { root.card_selected(id); }
+                    }
+
+                    if root.spike_row3.length > 0: CatalogRow {
+                        title: "Featured Anime & Classics";
+                        items: root.spike_row3;
+                        card_clicked(id, type) => { root.card_selected(id); }
+                    }
+
+                    // Fallback single row if only catalog_items loaded
+                    if root.search_text == "" && root.spike_row1.length == 0 && root.catalog_items.length > 0: CatalogRow {
+                        title: root.active_filter == "movie" ? "Popular Movies" : (root.active_filter == "series" ? "Popular Series" : "Popular Cinemeta Titles");
+                        items: root.catalog_items;
+                        card_clicked(id, type) => { root.card_selected(id); }
+                    }
+                }
+            }
+        }
+        }
+
+        // VIEW 1: TITLE DETAIL & STREAMS VIEW
+        if root.current_view == 1: VerticalLayout {
+            padding: 12px;
+            spacing: 10px;
+
+            // Header with back button
+            HorizontalLayout {
+                spacing: 12px;
+                Button {
+                    text: "← Back to Catalog";
+                    clicked => { root.back_to_catalog(); }
+                }
+
+                Text {
+                    text: root.detail_title;
+                    font-size: 18px;
+                    font-weight: 800;
+                    color: Theme.text;
+                    vertical-alignment: center;
+                }
+
+                Rectangle {
+                    width: 54px;
+                    height: 20px;
+                    background: root.detail_type == "movie" ? Theme.violet : Theme.violet-soft;
+                    border-radius: 4px;
+                    Text {
+                        text: root.detail_type == "movie" ? "MOVIE" : "SERIES";
+                        font-size: 10px;
+                        font-weight: 700;
+                        color: Theme.text;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Text {
+                    text: root.detail_year;
+                    font-size: 13px;
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                }
+            }
+
+            // Synopsis
+            if root.detail_desc != "": Rectangle {
+                background: Theme.surface;
+                border-radius: 6px;
+                HorizontalLayout {
+                    padding: 8px;
+                    Text {
+                        text: root.detail_desc;
+                        font-size: 12px;
+                        color: Theme.text;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+
+            // Series Season & Episode selectors
+            if root.detail_is_series: HorizontalLayout {
+                spacing: 10px;
+                Text {
+                    text: "Season:";
+                    color: Theme.text;
+                    vertical-alignment: center;
+                }
+                season_input := LineEdit {
+                    width: 50px;
+                    text <=> root.series_season;
+                }
+                Text {
+                    text: "Episode:";
+                    color: Theme.text;
+                    vertical-alignment: center;
+                }
+                episode_input := LineEdit {
+                    width: 50px;
+                    text <=> root.series_episode;
+                }
+                Button {
+                    text: "Fetch Streams";
+                    clicked => {
+                        root.fetch_episode_streams(root.detail_id, root.series_season, root.series_episode);
+                    }
+                }
+            }
+
+            // Streams list header
+            Text {
+                text: "Available Streams (Sorted by Surface RT Tegra 3 Compatibility):";
+                font-size: 13px;
+                font-weight: 700;
+                color: Theme.accent;
+            }
+
+            if root.is_streams_loading: Text {
+                text: "Querying Torrentio for streams...";
+                font-size: 14px;
+                color: Theme.text-muted;
+            }
+
+            if !root.is_streams_loading && root.stream_items.length == 0: Text {
+                text: "No compatible H.264 streams found for this title.";
+                font-size: 13px;
+                color: Theme.danger;
+            }
+
+            if !root.is_streams_loading && root.stream_items.length > 0: ScrollView {
+                VerticalLayout {
+                    spacing: 8px;
+
+                    for stream[i] in root.stream_items: Rectangle {
+                        height: 66px;
+                        background: Theme.surface;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: Theme.surface-raised;
+
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            padding-top: 6px;
+                            padding-bottom: 6px;
+                            spacing: 10px;
+
+                            // Badge
+                            Rectangle {
+                                width: 120px;
+                                height: 24px;
+                                background: stream.badge_color;
+                                border-radius: 4px;
+                                Text {
+                                    text: stream.badge;
+                                    font-size: 10px;
+                                    font-weight: 700;
+                                    color: Theme.text;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 2px;
+                                Text {
+                                    text: stream.display_title;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    color: Theme.text;
+                                    overflow: elide;
+                                }
+                                Text {
+                                    text: "Resolution: " + stream.quality + " | Size: " + stream.size + " | Seeders: " + stream.seeders;
+                                    font-size: 11px;
+                                    color: Theme.text-muted;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 6px;
+                                alignment: center;
+
+                                Button {
+                                    text: "▶ Play";
+                                    clicked => { root.play_stream_clicked(stream.idx); }
+                                }
+
+                                Button {
+                                    text: "🚀 VLC";
+                                    clicked => { root.play_vlc_clicked(stream.idx); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // VIEW 2: EMBEDDED PLAYER VIEW
+        if root.current_view == 2: VerticalLayout {
+            spacing: 0px;
+
+            // IN-PLAYER LOADING OVERLAY (Stremio / Nuvio Style)
+            if root.is_player_loading: Rectangle {
+                background: Theme.bg;
+
+                VerticalLayout {
+                    padding: 20px;
+                    spacing: 16px;
+
+                    HorizontalLayout {
+                        Button {
+                            text: "← Cancel & Return to Catalog";
+                            clicked => { root.player_back(); }
+                        }
+                        Rectangle {}
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 14px;
+
+                        Text {
+                            text: root.player_title;
+                            font-size: 22px;
+                            font-weight: 800;
+                            color: Theme.text;
+                            horizontal-alignment: center;
+                        }
+
+                        Text {
+                            text: root.player_status_msg;
+                            font-size: 14px;
+                            font-weight: 600;
+                            color: Theme.accent;
+                            horizontal-alignment: center;
+                        }
+
+                        Rectangle {
+                            width: 400px;
+                            height: 110px;
+                            background: Theme.surface;
+                            border-radius: 8px;
+                            border-width: 1px;
+                            border-color: Theme.surface-raised;
+
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 6px;
+                                alignment: center;
+
+                                Text {
+                                    text: "Swarm Peers: " + root.player_peers_str;
+                                    font-size: 13px;
+                                    color: Theme.text;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: "Download Speed: " + root.player_speed_str;
+                                    font-size: 13px;
+                                    font-weight: 700;
+                                    color: Theme.ok;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: "Initial Buffer Progress: " + root.player_progress_str;
+                                    font-size: 12px;
+                                    color: Theme.text-muted;
+                                    horizontal-alignment: center;
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: "⚡ Tegra 3 Hardware H.264 Acceleration Active";
+                            font-size: 12px;
+                            color: Theme.accent;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            // IN-PLAYER ACTIVE VIDEO VIEW (When stream is ready)
+            if !root.is_player_loading: Rectangle {
+                background: #000000;
+
+                // Native Win32 child HWND sits over this entire viewport area.
+                // All controls live in the owned PlayerOverlay floating above it.
+
+                // Emergency fallback controls ONLY if overlay failed to create
+                if root.overlay_failed: VerticalLayout {
+                    spacing: 0px;
+
+                    // Fallback Player Top Bar
+                    Rectangle {
+                        height: 44px;
+                        background: #101011;
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            spacing: 12px;
+
+                            Button {
+                                text: "← Back";
+                                clicked => { root.player_back(); }
+                            }
+
+                            Text {
+                                text: root.player_title;
+                                font-size: 14px;
+                                font-weight: 700;
+                                color: Theme.text;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Viewport space
+                    Rectangle {
+                        background: #000000;
+                    }
+
+                    // Fallback Player Bottom Transport Bar
+                    Rectangle {
+                        height: 60px;
+                        background: #101011;
+                        border-width: 1px;
+                        border-color: Theme.surface-raised;
+
+                        HorizontalLayout {
+                            padding-left: 14px;
+                            padding-right: 14px;
+                            spacing: 10px;
+                            alignment: center;
+
+                            Button {
+                                text: "-15s";
+                                clicked => { root.player_seek_backward(); }
+                            }
+
+                            Button {
+                                text: root.is_paused ? "Play" : "Pause";
+                                clicked => { root.player_play_pause(); }
+                            }
+
+                            Button {
+                                text: "+30s";
+                                clicked => { root.player_seek_forward(); }
+                            }
+
+                            Text {
+                                text: root.time_str;
+                                font-size: 13px;
+                                font-weight: 600;
+                                color: Theme.text;
+                                vertical-alignment: center;
+                            }
+
+                            Button {
+                                text: "Subs";
+                                clicked => { root.player_cycle_subtitles(); }
+                            }
+
+                            Button {
+                                text: root.is_fullscreen ? "Restore" : "Fullscreen";
+                                clicked => { root.player_toggle_fullscreen(); }
+                            }
+
+                            Button {
+                                text: "VLC";
+                                clicked => { root.player_open_vlc(); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // DIAGNOSTIC LOGS DRAWER (Bottom collapsible)
+        if root.logs_visible: Rectangle {
+            height: 140px;
+            background: Theme.bg;
+            border-width: 1px;
+            border-color: Theme.surface-raised;
+
+            VerticalLayout {
+                padding: 8px;
+                spacing: 4px;
+
+                HorizontalLayout {
+                    spacing: 10px;
+                    Text {
+                        text: "Diagnostic Logs (Live Engine Telemetry):";
+                        font-size: 12px;
+                        font-weight: 700;
+                        color: Theme.accent;
+                        vertical-alignment: center;
+                    }
+
+                    Button {
+                        text: "Clear Logs";
+                        clicked => { root.clear_logs(); }
+                    }
+
+                    Button {
+                        text: "✖ Close";
+                        clicked => { root.toggle_logs(); }
+                    }
+                }
+
+                ScrollView {
+                    VerticalLayout {
+                        spacing: 2px;
+                        for line[i] in root.log_lines: Text {
+                            text: line;
+                            font-size: 10px;
+                            color: Theme.text-muted;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -2,20 +2,76 @@ use crate::logger::{get_temp_dir, log_info};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Returns the data storage directory: %TEMP%\rt_stream_data\
+static STORAGE_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+/// Returns the root storage directory for Strawberry32.
+/// Tries %LOCALAPPDATA%\Strawberry32 first, verifies writability,
+/// and falls back to %TEMP%\Strawberry32 if needed.
+pub fn get_app_storage_root() -> PathBuf {
+    STORAGE_ROOT
+        .get_or_init(|| {
+            let candidate = if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
+                PathBuf::from(local_appdata).join("Strawberry32")
+            } else {
+                get_temp_dir().join("Strawberry32")
+            };
+
+            // Probe writability
+            let is_writable = (|| {
+                fs::create_dir_all(&candidate).ok()?;
+                let probe_file = candidate.join(".write_probe");
+                fs::write(&probe_file, b"ok").ok()?;
+                fs::remove_file(&probe_file).ok()?;
+                Some(())
+            })()
+            .is_some();
+
+            let chosen = if is_writable {
+                log_info(&format!("Storage root verified in %LOCALAPPDATA%: {}", candidate.display()));
+                candidate
+            } else {
+                let fallback = get_temp_dir().join("Strawberry32");
+                let _ = fs::create_dir_all(&fallback);
+                log_info(&format!("Storage root falling back to %TEMP%: {}", fallback.display()));
+                fallback
+            };
+
+            // Initialize canonical folder layout
+            let _ = fs::create_dir_all(chosen.join("data").join("profiles").join("default"));
+            let _ = fs::create_dir_all(chosen.join("cache").join("http"));
+            let _ = fs::create_dir_all(chosen.join("cache").join("images"));
+            let _ = fs::create_dir_all(chosen.join("torrents"));
+            let _ = fs::create_dir_all(chosen.join("logs"));
+
+            chosen
+        })
+        .clone()
+}
+
+/// Returns the persistent data directory: <storage_root>\data\profiles\default\
 pub fn get_data_dir() -> PathBuf {
-    let dir = get_temp_dir().join("rt_stream_data");
+    let dir = get_app_storage_root()
+        .join("data")
+        .join("profiles")
+        .join("default");
     let _ = fs::create_dir_all(&dir);
     dir
 }
 
-/// Returns the poster thumbnail cache directory: %TEMP%\rt_stream_posters\
+/// Returns the logs directory: <storage_root>\logs\
+pub fn get_logs_dir() -> PathBuf {
+    let dir = get_app_storage_root().join("logs");
+    let _ = fs::create_dir_all(&dir);
+    dir
+}
+
+/// Returns the poster thumbnail cache directory: <storage_root>\cache\images\
 #[allow(dead_code)]
 pub fn get_posters_dir() -> PathBuf {
-    let dir = get_temp_dir().join("rt_stream_posters");
+    let dir = get_app_storage_root().join("cache").join("images");
     let _ = fs::create_dir_all(&dir);
     dir
 }
