@@ -209,7 +209,6 @@ export component DetailView inherits Rectangle {
     in property <string> detail_genres: "";
     in property <string> detail_cast: "";
     in property <string> detail_director: "";
-    in-out property <bool> desc_expanded: false;
 
     // Series episode selector properties
     in property <[int]> seasons_list: [];
@@ -323,7 +322,8 @@ export component DetailView inherits Rectangle {
 
                 // Hero Details Card with optional backdrop
                 Rectangle {
-                    min-height: 190px;
+                    min-height: 215px;
+                    clip: true;
                     background: Theme.surface;
                     border-radius: 8px;
                     border-width: 1px;
@@ -347,7 +347,6 @@ export component DetailView inherits Rectangle {
                     HorizontalLayout {
                         padding: 14px;
                         spacing: 16px;
-                        alignment: start;
 
                         // Poster placeholder / thumbnail
                         Rectangle {
@@ -375,6 +374,7 @@ export component DetailView inherits Rectangle {
 
                         // Rich metadata details
                         VerticalLayout {
+                            horizontal-stretch: 1;
                             spacing: 8px;
                             alignment: start;
 
@@ -426,50 +426,14 @@ export component DetailView inherits Rectangle {
                                 }
                             }
 
-                            // Expandable Description Block
-                            VerticalLayout {
-                                spacing: 4px;
-
-                                Text {
-                                    text: root.detail_desc != "" ? root.detail_desc : "No synopsis available for this title.";
-                                    font-size: 12px;
-                                    color: Theme.text-muted;
-                                    wrap: word-wrap;
-                                    overflow: elide;
-                                    max-height: root.desc_expanded ? 320px : 52px;
-                                }
-
-                                if root.detail_desc != "" : HorizontalLayout {
-                                    alignment: start;
-                                    Rectangle {
-                                        height: 20px;
-                                        background: desc_touch.has-hover ? #25262b : #18191c;
-                                        border-radius: 4px;
-                                        border-width: 1px;
-                                        border-color: desc_touch.has-hover ? Theme.accent : #333438;
-
-                                        desc_touch := TouchArea {
-                                            width: 100%;
-                                            height: 100%;
-                                            clicked => {
-                                                root.desc_expanded = !root.desc_expanded;
-                                            }
-                                        }
-
-                                        HorizontalLayout {
-                                            padding-left: 8px;
-                                            padding-right: 8px;
-                                            alignment: center;
-                                            Text {
-                                                text: root.desc_expanded ? "Show Less ▲" : "... More Details ▼";
-                                                font-size: 11px;
-                                                font-weight: 700;
-                                                color: Theme.accent;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-                                    }
-                                }
+                            // Full-width synopsis text without expand button
+                            Text {
+                                text: root.detail_desc != "" ? root.detail_desc : "No synopsis available for this title.";
+                                font-size: 12px;
+                                color: Theme.text-muted;
+                                wrap: word-wrap;
+                                overflow: elide;
+                                max-height: 84px;
                             }
 
                             if root.detail_cast != "" : Text {
@@ -478,14 +442,16 @@ export component DetailView inherits Rectangle {
                                 color: Theme.text-faint;
                                 wrap: word-wrap;
                                 overflow: elide;
-                                max-height: root.desc_expanded ? 60px : 16px;
+                                max-height: 32px;
                             }
 
-                            if root.detail_director != "" && root.desc_expanded : Text {
+                            if root.detail_director != "" : Text {
                                 text: "Director: " + root.detail_director;
                                 font-size: 11px;
                                 color: Theme.text-faint;
                                 wrap: word-wrap;
+                                overflow: elide;
+                                max-height: 18px;
                             }
 
                             // Prominent "Play Best Match" Button

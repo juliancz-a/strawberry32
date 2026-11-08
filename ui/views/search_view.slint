@@ -17,6 +17,7 @@ export component SearchView inherits Rectangle {
     background: Theme.bg;
 
     VerticalLayout {
+        alignment: start;
         padding-left: 20px;
         padding-right: 20px;
         padding-top: 16px;
@@ -176,6 +177,7 @@ export component SearchView inherits Rectangle {
 
         if !root.is_searching && (root.movie_results.length > 0 || root.series_results.length > 0) : ScrollView {
             VerticalLayout {
+                alignment: start;
                 spacing: 16px;
 
                 if (root.active_filter == "all" || root.active_filter == "movie") && root.movie_results.length > 0 : CatalogRow {

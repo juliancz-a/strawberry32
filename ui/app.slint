@@ -8,7 +8,7 @@ import { DetailView, StreamItem, EpisodeItem } from "views/detail_view.slint";
 import { SearchView } from "views/search_view.slint";
 import { LibraryView } from "views/library_view.slint";
 import { SettingsView, AddonItem } from "views/settings_view.slint";
-import { Button, ScrollView } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
 
 export { Theme, PlayerOverlay, CatalogItem, StreamItem, EpisodeItem, AddonItem }
 
@@ -19,6 +19,9 @@ export component MainWindow inherits Window {
     min-height: 480px;
     title: "Strawberry32 - Surface RT (ARM32)";
     background: Theme.bg;
+
+    // Startup Splash State
+    in-out property <bool> is_app_initializing: true;
 
     // View state: 0 = Home, 1 = Detail, 2 = Player, 3 = Search, 4 = Library, 5 = Settings
     in-out property <int> current_view: 0;
@@ -71,7 +74,6 @@ export component MainWindow inherits Window {
     in-out property <string> detail_genres: "";
     in-out property <string> detail_cast: "";
     in-out property <string> detail_director: "";
-    in-out property <bool> detail_desc_expanded: false;
 
     // Series episode selector properties
     in-out property <[int]> seasons_list: [];
@@ -92,6 +94,7 @@ export component MainWindow inherits Window {
     in-out property <string> player_peers_str: "";
     in-out property <string> player_speed_str: "";
     in-out property <string> player_progress_str: "";
+    in-out property <float> player_progress_val: 0.0;
     in-out property <string> time_str: "--:-- / --:--";
     in-out property <string> subtitle_text: "";
     in-out property <bool> is_paused: false;
@@ -264,9 +267,30 @@ export component MainWindow inherits Window {
                                         color: Theme.text;
                                         horizontal-alignment: center;
                                     }
-                                    Button {
-                                        text: "⚡ Click to Load Quick Setup Catalog";
-                                        clicked => { root.quick_dev_setup(); }
+                                    HorizontalLayout {
+                                        alignment: center;
+                                        Rectangle {
+                                            width: 260px;
+                                            height: 38px;
+                                            background: qk_touch.pressed ? Theme.accent-pressed : (qk_touch.has-hover ? #ff709e : Theme.accent);
+                                            border-radius: 6px;
+                                            qk_touch := TouchArea {
+                                                width: 100%;
+                                                height: 100%;
+                                                mouse-cursor: pointer;
+                                                clicked => { root.quick_dev_setup(); }
+                                            }
+                                            HorizontalLayout {
+                                                alignment: center;
+                                                Text {
+                                                    text: "⚡ Click to Load Quick Setup Catalog";
+                                                    font-size: 13px;
+                                                    font-weight: 700;
+                                                    color: #ffffff;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -339,7 +363,6 @@ export component MainWindow inherits Window {
                     detail_genres: root.detail_genres;
                     detail_cast: root.detail_cast;
                     detail_director: root.detail_director;
-                    desc_expanded <=> root.detail_desc_expanded;
 
                     seasons_list: root.seasons_list;
                     selected_season <=> root.selected_season;
@@ -365,93 +388,181 @@ export component MainWindow inherits Window {
                 }
 
                 // VIEW 2: EMBEDDED PLAYER VIEW
-                if root.current_view == 2 : VerticalLayout {
-                    spacing: 0px;
+                if root.current_view == 2 : Rectangle {
+                    background: #000000;
 
-                    // In-Player Loading Overlay
+                    // In-Player Polished Nuvio Loading Overlay
                     if root.is_player_loading : Rectangle {
-                        background: Theme.bg;
+                        width: 100%;
+                        height: 100%;
+                        background: #0b0b0e;
 
-                        VerticalLayout {
-                            padding: 20px;
-                            spacing: 16px;
+                        // Full-bleed backdrop if present
+                        if root.has_detail_backdrop : Image {
+                            width: 100%;
+                            height: 100%;
+                            source: root.detail_backdrop;
+                            image-fit: cover;
+                            opacity: 0.22;
+                        }
 
-                            HorizontalLayout {
-                                Button {
-                                    text: "← Cancel & Return";
+                        // Scrim overlay
+                        Rectangle {
+                            width: 100%;
+                            height: 100%;
+                            background: #0b0b0ec8;
+                        }
+
+                        // Top bar
+                        HorizontalLayout {
+                            y: 16px;
+                            x: 20px;
+                            width: parent.width - 40px;
+                            height: 40px;
+                            alignment: space-between;
+
+                            // Left Back Pill Button
+                            Rectangle {
+                                width: 92px;
+                                height: 36px;
+                                border-radius: 18px;
+                                background: load_back_touch.pressed ? #33333d : (load_back_touch.has-hover ? #25252c : #18181f);
+                                border-width: 1px;
+                                border-color: load_back_touch.has-hover ? Theme.accent : #2a2a35;
+
+                                load_back_touch := TouchArea {
+                                    width: 100%;
+                                    height: 100%;
+                                    mouse-cursor: pointer;
                                     clicked => { root.player_back(); }
                                 }
-                                Rectangle {}
+
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Text {
+                                        text: "← Back";
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                        color: #ffffff;
+                                        vertical-alignment: center;
+                                    }
+                                }
                             }
 
-                            VerticalLayout {
+                            // Top Right Controls (Fullscreen & Close)
+                            HorizontalLayout {
+                                spacing: 10px;
                                 alignment: center;
-                                spacing: 14px;
-
-                                Text {
-                                    text: root.player_title;
-                                    font-size: 22px;
-                                    font-weight: 800;
-                                    color: Theme.text;
-                                    horizontal-alignment: center;
-                                }
-
-                                Text {
-                                    text: root.player_status_msg;
-                                    font-size: 14px;
-                                    font-weight: 600;
-                                    color: Theme.accent;
-                                    horizontal-alignment: center;
-                                }
 
                                 Rectangle {
-                                    width: 400px;
-                                    height: 110px;
-                                    background: Theme.surface;
-                                    border-radius: 8px;
+                                    width: 36px;
+                                    height: 36px;
+                                    border-radius: 18px;
+                                    background: load_fs_touch.has-hover ? #25252c : #18181f;
                                     border-width: 1px;
-                                    border-color: Theme.surface-raised;
-
-                                    VerticalLayout {
-                                        padding: 12px;
-                                        spacing: 6px;
-                                        alignment: center;
-
-                                        Text {
-                                            text: "Swarm Peers: " + root.player_peers_str;
-                                            font-size: 13px;
-                                            color: Theme.text;
-                                            horizontal-alignment: center;
-                                        }
-                                        Text {
-                                            text: "Download Speed: " + root.player_speed_str;
-                                            font-size: 13px;
-                                            font-weight: 700;
-                                            color: Theme.ok;
-                                            horizontal-alignment: center;
-                                        }
-                                        Text {
-                                            text: "Initial Buffer Progress: " + root.player_progress_str;
-                                            font-size: 12px;
-                                            color: Theme.text-muted;
-                                            horizontal-alignment: center;
-                                        }
+                                    border-color: #2a2a35;
+                                    load_fs_touch := TouchArea {
+                                        width: 100%;
+                                        height: 100%;
+                                        mouse-cursor: pointer;
+                                        clicked => { root.player_toggle_fullscreen(); }
+                                    }
+                                    Text {
+                                        text: root.is_fullscreen ? "⤓" : "⛶";
+                                        font-size: 16px;
+                                        color: #ffffff;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
                                     }
                                 }
 
-                                Text {
-                                    text: "⚡ Tegra 3 Hardware H.264 Acceleration Active";
-                                    font-size: 12px;
-                                    color: Theme.accent;
-                                    horizontal-alignment: center;
+                                Rectangle {
+                                    width: 36px;
+                                    height: 36px;
+                                    border-radius: 18px;
+                                    background: load_close_touch.has-hover ? #3a151b : #18181f;
+                                    border-width: 1px;
+                                    border-color: load_close_touch.has-hover ? #ff453a : #2a2a35;
+                                    load_close_touch := TouchArea {
+                                        width: 100%;
+                                        height: 100%;
+                                        mouse-cursor: pointer;
+                                        clicked => { root.player_back(); }
+                                    }
+                                    Text {
+                                        text: "✕";
+                                        font-size: 14px;
+                                        color: load_close_touch.has-hover ? #ff453a : #ffffff;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    // Active Video Viewport
-                    if !root.is_player_loading : Rectangle {
-                        background: #000000;
+                        // Centered Card / Stream Telemetry
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 12px;
+
+                            Text {
+                                text: root.player_title != "" ? root.player_title : "Buffering Stream";
+                                font-size: 36px;
+                                font-weight: 800;
+                                color: #ffffff;
+                                horizontal-alignment: center;
+                                overflow: elide;
+                                max-width: 780px;
+                            }
+
+                            if root.detail_is_series && root.selected_episode_title != "" : Text {
+                                text: "S" + root.selected_season + ":E" + root.selected_episode + " • " + root.selected_episode_title;
+                                font-size: 16px;
+                                font-weight: 600;
+                                color: Theme.accent;
+                                horizontal-alignment: center;
+                            }
+
+                            Rectangle { height: 10px; }
+
+                            // 320x4px Accent Progress Bar
+                            Rectangle {
+                                width: 320px;
+                                height: 4px;
+                                background: #23232a;
+                                border-radius: 2px;
+                                clip: true;
+
+                                Rectangle {
+                                    x: 0px;
+                                    y: 0px;
+                                    height: 100%;
+                                    width: (root.player_progress_val > 0.0 ? root.player_progress_val : 0.35) * parent.width;
+                                    background: Theme.accent;
+                                    border-radius: 2px;
+                                }
+                            }
+
+                            // Single-line telemetry string right beneath the bar
+                            Text {
+                                text: (root.player_peers_str != "" ? root.player_peers_str : "0 peers") + " • " +
+                                      (root.player_speed_str != "" ? root.player_speed_str : "0 KB/s") + " • " +
+                                      (root.player_progress_str != "" ? root.player_progress_str : "0% cached");
+                                font-size: 12px;
+                                font-weight: 500;
+                                color: #a0a0ab;
+                                horizontal-alignment: center;
+                            }
+
+                            // Status message
+                            Text {
+                                text: root.player_status_msg != "" ? root.player_status_msg : "Probing stream... Please wait";
+                                font-size: 13px;
+                                font-weight: 600;
+                                color: Theme.text;
+                                horizontal-alignment: center;
+                            }
+                        }
                     }
                 }
 
@@ -477,6 +588,7 @@ export component MainWindow inherits Window {
                     explore_clicked => {
                         root.current_view = 0;
                     }
+                    request_lazy_range(row, start, end) => { root.request_lazy_range(row, start, end); }
                 }
 
                 // VIEW 5: SETTINGS & ADD-ONS MANAGER VIEW
@@ -537,6 +649,69 @@ export component MainWindow inherits Window {
                 }
                 toggle_fullscreen => {
                     root.player_toggle_fullscreen();
+                }
+            }
+        }
+
+        // STARTUP SPLASH SCREEN OVERLAY
+        if root.is_app_initializing : Rectangle {
+            x: 0px;
+            y: 0px;
+            width: 100%;
+            height: 100%;
+            background: #0b0b0e;
+
+            VerticalLayout {
+                alignment: center;
+                spacing: 12px;
+
+                Text {
+                    text: "🍓";
+                    font-size: 64px;
+                    horizontal-alignment: center;
+                }
+
+                Text {
+                    text: "Strawberry32";
+                    font-size: 32px;
+                    font-weight: 800;
+                    color: #ffffff;
+                    horizontal-alignment: center;
+                }
+
+                Text {
+                    text: "Fast native streaming for Surface RT & ARM32";
+                    font-size: 14px;
+                    font-weight: 500;
+                    color: #8e8e9a;
+                    horizontal-alignment: center;
+                }
+
+                Rectangle { height: 16px; }
+
+                // Slim 240x4px loading bar
+                Rectangle {
+                    width: 240px;
+                    height: 4px;
+                    background: #1c1c24;
+                    border-radius: 2px;
+                    clip: true;
+
+                    Rectangle {
+                        x: 0px;
+                        y: 0px;
+                        width: 120px;
+                        height: 100%;
+                        background: Theme.accent;
+                        border-radius: 2px;
+                    }
+                }
+
+                Text {
+                    text: "Loading catalog & add-ons...";
+                    font-size: 12px;
+                    color: #70707c;
+                    horizontal-alignment: center;
                 }
             }
         }

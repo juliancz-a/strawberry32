@@ -364,6 +364,7 @@ pub fn load_multi_row_home_catalog(app_weak: slint::Weak<MainWindow>) {
 
         let _ = slint::invoke_from_event_loop(move || {
             if let Some(ui) = app_weak_init.upgrade() {
+                ui.set_is_app_initializing(false);
                 ui.set_is_catalog_loading(false);
 
                 let items1: Vec<CatalogItem> = r1.iter().map(meta_to_catalog_item).collect();
@@ -754,6 +755,7 @@ pub fn run_app() -> Result<(), String> {
                 5 => ui.get_home_row6(),
                 10 => ui.get_search_movie_results(),
                 11 => ui.get_search_series_results(),
+                20 => ui.get_library_items(),
                 _ => return,
             };
 
@@ -782,6 +784,7 @@ pub fn run_app() -> Result<(), String> {
                                         5 => u.get_home_row6(),
                                         10 => u.get_search_movie_results(),
                                         11 => u.get_search_series_results(),
+                                        20 => u.get_library_items(),
                                         _ => return,
                                     };
                                     if let Some(mut cur) = m.row_data(idx) {
@@ -828,7 +831,6 @@ pub fn run_app() -> Result<(), String> {
             ui.set_detail_is_series(type_str == "series");
             ui.set_selected_season(1);
             ui.set_selected_episode(1);
-            ui.set_detail_desc_expanded(false);
             ui.set_has_detail_backdrop(false);
             ui.set_detail_poster(slint::Image::default());
             ui.set_is_streams_loading(true);
@@ -1091,45 +1093,6 @@ pub fn run_app() -> Result<(), String> {
                 );
             }
 
-            // Spawn subtitle fetcher in background
-            if !ui_detail_id.is_empty() {
-                let sub_type = ui_detail_type.clone();
-                let sub_id = ui_detail_id.clone();
-                std::thread::spawn(move || {
-                    let (v_hash, v_size) = crate::engine::get_current_video_hash()
-                        .map(|(h, s)| (Some(h), Some(s)))
-                        .unwrap_or((None, None));
-
-                    let mut tracks = subtitles::fetch_subtitle_tracks(
-                        &sub_type,
-                        &sub_id,
-                        Some(ui_season),
-                        Some(ui_episode),
-                        v_hash.as_deref(),
-                        v_size,
-                    ).unwrap_or_default();
-
-                    // Inject bundled torrent subtitles if found
-                    let bundled = crate::engine::get_bundled_subtitles();
-                    for b in bundled {
-                        let local_url = format!("http://127.0.0.1:3030/torrents/0/stream/{}", b.file_idx);
-                        tracks.insert(0, state::SubtitleTrack {
-                            id: format!("bundled_{}", b.file_idx),
-                            lang: format!("{} [Torrent]", b.lang),
-                            url: local_url,
-                        });
-                    }
-
-                    *SUBTITLE_TRACKS.lock().unwrap() = tracks.clone();
-                    if let Some(first) = tracks.first() {
-                        if let Ok(entries) = subtitles::download_and_parse_subtitle(&first.url) {
-                            subtitles::set_active_subtitles(entries, &first.lang);
-                            log_player(&format!("Auto-loaded subtitle track: {}", first.lang));
-                        }
-                    }
-                });
-            }
-
             let app_weak2 = app_weak.clone();
             std::thread::spawn(move || {
                 let (stream_season, stream_episode) = if ui_detail_type == "series" {
@@ -1148,6 +1111,67 @@ pub fn run_app() -> Result<(), String> {
                     Ok(proxy_url) => {
                         *ACTIVE_STREAM_URL.lock().unwrap() = proxy_url.clone();
                         log_player(&format!("Stream ready at {}. Initializing embedded player on UI thread...", proxy_url));
+
+                        // Spawn subtitle discovery AFTER stream sync succeeds when video hash & bundled subs are known
+                        if !ui_detail_id.is_empty() {
+                            let sub_type = ui_detail_type.clone();
+                            let sub_id = ui_detail_id.clone();
+                            std::thread::spawn(move || {
+                                let (v_hash, v_size) = crate::engine::get_current_video_hash()
+                                    .map(|(h, s)| (Some(h), Some(s)))
+                                    .unwrap_or((None, None));
+
+                                let mut tracks = subtitles::fetch_subtitle_tracks(
+                                    &sub_type,
+                                    &sub_id,
+                                    Some(ui_season),
+                                    Some(ui_episode),
+                                    v_hash.as_deref(),
+                                    v_size,
+                                ).unwrap_or_default();
+
+                                // Inject bundled torrent subtitles if found
+                                let bundled = crate::engine::get_bundled_subtitles();
+                                for b in bundled {
+                                    let local_url = format!("http://127.0.0.1:3030/torrents/0/stream/{}", b.file_idx);
+                                    let clean_name = subtitles::clean_language_name(&b.lang);
+                                    tracks.insert(0, state::SubtitleTrack {
+                                        id: format!("bundled_{}", b.file_idx),
+                                        lang: format!("{} [Embedded]", clean_name),
+                                        url: local_url,
+                                    });
+                                }
+
+                                *SUBTITLE_TRACKS.lock().unwrap() = tracks.clone();
+
+                                // Auto-select track matching user preference
+                                let settings = state::load_settings();
+                                let pref_lang = settings.playback.sub_lang.to_lowercase();
+                                let mut chosen_idx = 0;
+                                for (i, t) in tracks.iter().enumerate() {
+                                    if t.lang.to_lowercase().contains(&pref_lang) {
+                                        chosen_idx = i;
+                                        break;
+                                    }
+                                }
+
+                                if let Some(track) = tracks.get(chosen_idx) {
+                                    if let Ok(entries) = subtitles::download_and_parse_subtitle(&track.url) {
+                                        subtitles::set_active_subtitles(entries, &track.lang);
+                                        log_player(&format!("Auto-loaded subtitle track #{}: {}", chosen_idx, track.lang));
+                                    }
+                                }
+
+                                let track_names: Vec<String> = tracks.iter().map(|t| {
+                                    let badge = subtitles::get_sub_format_badge(&t.url);
+                                    format!("{} {}", t.lang, badge)
+                                }).collect();
+
+                                let _ = slint::invoke_from_event_loop(move || {
+                                    crate::ui::overlay::set_overlay_subtitle_tracks(track_names, chosen_idx);
+                                });
+                            });
+                        }
 
                         let _ = slint::invoke_from_event_loop(move || {
                             if let Some(ui) = app_weak2.upgrade() {
@@ -1201,6 +1225,7 @@ pub fn run_app() -> Result<(), String> {
                                                 overlay.set_is_muted(player::get_muted());
                                                 overlay.set_sub_delay_ms(subtitles::get_subtitle_delay_ms() as i32);
                                                 overlay.set_sub_size(1);
+                                                overlay.set_subtitles_enabled(true);
 
                                                 let (has_next, next_lbl, next_s, next_e) = if let (Some(s), Some(e)) = (stream_season, stream_episode) {
                                                     let videos = CURRENT_SERIES_VIDEOS.lock().unwrap().clone();
@@ -1315,6 +1340,47 @@ pub fn run_app() -> Result<(), String> {
                                                     crate::ui::overlay::notify_user_activity();
                                                     if let Some(ov) = overlay_weak_sz.upgrade() {
                                                         ov.set_sub_size(sz);
+                                                    }
+                                                });
+
+                                                let overlay_weak_sub_tog = overlay.as_weak();
+                                                overlay.on_toggle_subtitles_enabled(move |enabled| {
+                                                    crate::ui::overlay::notify_user_activity();
+                                                    if let Some(ov) = overlay_weak_sub_tog.upgrade() {
+                                                        ov.set_subtitles_enabled(enabled);
+                                                    }
+                                                });
+
+                                                let overlay_weak_sub_sel = overlay.as_weak();
+                                                overlay.on_select_subtitle_track(move |idx| {
+                                                    crate::ui::overlay::notify_user_activity();
+                                                    let tracks = SUBTITLE_TRACKS.lock().unwrap().clone();
+                                                    if let Some(track) = tracks.get(idx as usize) {
+                                                        let track_url = track.url.clone();
+                                                        let track_lang = track.lang.clone();
+                                                        let ov_weak = overlay_weak_sub_sel.clone();
+                                                        std::thread::spawn(move || {
+                                                            if let Ok(entries) = subtitles::download_and_parse_subtitle(&track_url) {
+                                                                subtitles::set_active_subtitles(entries, &track_lang);
+                                                                let _ = slint::invoke_from_event_loop(move || {
+                                                                    if let Some(ov) = ov_weak.upgrade() {
+                                                                        ov.set_selected_subtitle_idx(idx);
+                                                                    }
+                                                                });
+                                                            }
+                                                        });
+                                                    }
+                                                });
+
+                                                let overlay_weak_vset = overlay.as_weak();
+                                                overlay.on_volume_set(move |pct| {
+                                                    crate::ui::overlay::notify_user_activity();
+                                                    let val = pct.clamp(0, 100);
+                                                    let _ = player::set_volume(val as f32 / 100.0);
+                                                    let _ = player::set_muted(val == 0);
+                                                    if let Some(ov) = overlay_weak_vset.upgrade() {
+                                                        ov.set_volume_percent(val);
+                                                        ov.set_is_muted(val == 0);
                                                     }
                                                 });
 

@@ -67,9 +67,9 @@ pub fn update_overlay_region(hwnd: HWND, width: i32, height: i32, controls_visib
             CombineRgn(combined_rgn, combined_rgn, bottom_rgn, RGN_OR);
             DeleteObject(bottom_rgn as HGDIOBJ);
 
-            // Side panel rect if open (width - 320 .. width, 50 .. height - bot_h)
+            // Side panel rect if open (width - 340 .. width, 50 .. height - bot_h)
             if active_panel > 0 {
-                let panel_w = 320.min(width);
+                let panel_w = 340.min(width);
                 let panel_x = width - panel_w;
                 let panel_y = 50;
                 let panel_h = (height - bot_h - 50).max(100);
@@ -379,4 +379,17 @@ pub fn hide_overlay() {
 /// Returns the overlay HWND
 pub fn get_overlay_hwnd() -> HWND {
     OVERLAY_HWND.load(Ordering::SeqCst) as HWND
+}
+
+/// Updates the available subtitle tracks and active selection on the overlay
+pub fn set_overlay_subtitle_tracks(track_names: Vec<String>, selected_idx: usize) {
+    OVERLAY_INSTANCE.with(|cell| {
+        if let Ok(guard) = cell.try_borrow() {
+            if let Some(ov) = guard.as_ref() {
+                let slint_names: Vec<slint::SharedString> = track_names.into_iter().map(|s| s.into()).collect();
+                ov.set_subtitle_track_names(slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(slint_names))));
+                ov.set_selected_subtitle_idx(selected_idx as i32);
+            }
+        }
+    });
 }

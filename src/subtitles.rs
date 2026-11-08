@@ -149,7 +149,50 @@ pub fn find_bundled_subtitles(files: &[(usize, String, u64)]) -> Vec<BundledSubt
     list
 }
 
-/// Fetches available subtitle tracks for a movie or episode from OpenSubtitles v3 Stremio addon.
+pub fn clean_language_name(code: &str) -> &'static str {
+    match code.to_lowercase().as_str() {
+        "en" | "eng" | "english" => "English",
+        "es" | "spa" | "spanish" | "es-es" | "es-419" => "Español",
+        "fr" | "fre" | "fra" | "french" => "Français",
+        "de" | "ger" | "deu" | "german" => "Deutsch",
+        "it" | "ita" | "italian" => "Italiano",
+        "pt" | "por" | "portuguese" | "pt-br" => "Português",
+        "ru" | "rus" | "russian" => "Русский",
+        "nl" | "dut" | "nld" | "dutch" => "Nederlands",
+        "pl" | "pol" | "polish" => "Polski",
+        "tr" | "tur" | "turkish" => "Türkçe",
+        "ar" | "ara" | "arabic" => "العربية",
+        "zh" | "chi" | "zho" | "chinese" => "Chinese",
+        "ja" | "jpn" | "japanese" => "Japanese",
+        "ko" | "kor" | "korean" => "Korean",
+        "sv" | "swe" | "swedish" => "Svenska",
+        "da" | "dan" | "danish" => "Dansk",
+        "no" | "nor" | "norwegian" => "Norsk",
+        "fi" | "fin" | "finnish" => "Suomi",
+        "el" | "ell" | "greek" => "Ελληνικά",
+        "ro" | "rum" | "ron" | "romanian" => "Română",
+        "cs" | "cze" | "ces" | "czech" => "Čeština",
+        "hu" | "hun" | "hungarian" => "Magyar",
+        "uk" | "ukr" | "ukrainian" => "Українська",
+        "hi" | "hin" | "hindi" => "हिन्दी",
+        _ => "Subtitle",
+    }
+}
+
+pub fn get_sub_format_badge(url: &str) -> &'static str {
+    let lower = url.to_lowercase();
+    if lower.contains(".vtt") {
+        "[VTT]"
+    } else if lower.contains(".ass") {
+        "[ASS]"
+    } else if lower.contains(".ssa") {
+        "[SSA]"
+    } else {
+        "[SRT]"
+    }
+}
+
+/// Fetches available subtitle tracks for a movie or episode from all enabled subtitle addons.
 /// Supports frame-accurate lookup via videoHash and videoSize when available.
 pub fn fetch_subtitle_tracks(
     item_type: &str,
@@ -173,63 +216,97 @@ pub fn fetch_subtitle_tracks(
         }
     };
 
-    // 1. Try frame-accurate videoHash query if available
-    if let (Some(hash), Some(size)) = (video_hash, video_size) {
-        let hash_url = format!(
-            "https://opensubtitles-v3.strem.io/subtitles/{}/{}/videoHash={}/videoSize={}.json",
-            item_type, base_query_id, hash, size
-        );
-        log_info(&format!("Searching frame-accurate subtitles with videoHash: {}", hash_url));
+    // Discover all enabled subtitle addons
+    let cfg = crate::state::load_addons_config();
+    let mut addon_bases = Vec::new();
+    for addon in &cfg.addons {
+        if !addon.enabled {
+            continue;
+        }
+        let provides_subs = addon.manifest.resources.iter().any(|r| {
+            if let Some(s) = r.as_str() {
+                s == "subtitles"
+            } else if let Some(obj) = r.as_object() {
+                obj.get("name").and_then(|v| v.as_str()) == Some("subtitles")
+            } else {
+                false
+            }
+        }) || addon.manifest.id.contains("opensubtitles")
+           || addon.transport_url.contains("opensubtitles");
 
-        if let Ok(resp) = client.get(&hash_url).call() {
-            if let Ok(parsed) = resp.into_json::<SubtitleResponse>() {
-                if !parsed.subtitles.is_empty() {
-                    let mut tracks = Vec::new();
+        if provides_subs {
+            let base = addon.transport_url.trim_end_matches("/manifest.json").trim_end_matches('/');
+            if !addon_bases.contains(&base.to_string()) {
+                addon_bases.push(base.to_string());
+            }
+        }
+    }
+
+    if addon_bases.is_empty() {
+        addon_bases.push("https://opensubtitles-v3.strem.io".to_string());
+    }
+
+    let mut raw_tracks = Vec::new();
+    let mut seen_urls = std::collections::HashSet::new();
+
+    for base in addon_bases {
+        // 1. Frame-accurate videoHash query if available
+        if let (Some(hash), Some(size)) = (video_hash, video_size) {
+            let hash_url = format!(
+                "{}/subtitles/{}/{}/videoHash={}&videoSize={}.json",
+                base, item_type, base_query_id, hash, size
+            );
+            log_info(&format!("Searching frame-accurate subtitles: {}", hash_url));
+
+            if let Ok(resp) = client.get(&hash_url).call() {
+                if let Ok(parsed) = resp.into_json::<SubtitleResponse>() {
                     for sub in parsed.subtitles {
                         if let (Some(url), Some(lang)) = (sub.url, sub.lang) {
-                            let id = sub.id.unwrap_or_else(|| lang.clone());
-                            tracks.push(SubtitleTrack { id, lang, url });
+                            if seen_urls.insert(url.clone()) {
+                                let id = sub.id.unwrap_or_else(|| lang.clone());
+                                raw_tracks.push((id, lang, url));
+                            }
                         }
                     }
-                    log_info(&format!("Found {} frame-accurate subtitle tracks via videoHash.", tracks.len()));
-                    return Ok(tracks);
+                }
+            }
+        }
+
+        // 2. Standard ID query
+        let std_url = format!("{}/subtitles/{}/{}.json", base, item_type, base_query_id);
+        log_info(&format!("Searching standard metadata subtitles: {}", std_url));
+
+        if let Ok(resp) = client.get(&std_url).call() {
+            if let Ok(parsed) = resp.into_json::<SubtitleResponse>() {
+                for sub in parsed.subtitles {
+                    if let (Some(url), Some(lang)) = (sub.url, sub.lang) {
+                        if seen_urls.insert(url.clone()) {
+                            let id = sub.id.unwrap_or_else(|| lang.clone());
+                            raw_tracks.push((id, lang, url));
+                        }
+                    }
                 }
             }
         }
     }
 
-    // 2. Standard ID-based fallback query
-    let fallback_url = format!(
-        "https://opensubtitles-v3.strem.io/subtitles/{}/{}.json",
-        item_type, base_query_id
-    );
-    log_info(&format!("Searching subtitles via standard ID: {}", fallback_url));
-
-    let resp = match client.get(&fallback_url).call() {
-        Ok(r) => r,
-        Err(e) => {
-            log_err(&format!("Failed searching subtitles at {}: {}", fallback_url, e));
-            return Err(e.to_string());
-        }
-    };
-
-    let parsed: SubtitleResponse = match resp.into_json() {
-        Ok(p) => p,
-        Err(e) => {
-            log_err(&format!("Error parsing subtitle JSON: {}", e));
-            return Err(e.to_string());
-        }
-    };
-
+    // Format clean language labels: "English #1", "Español #1", etc.
+    let mut lang_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut tracks = Vec::new();
-    for sub in parsed.subtitles {
-        if let (Some(url), Some(lang)) = (sub.url, sub.lang) {
-            let id = sub.id.unwrap_or_else(|| lang.clone());
-            tracks.push(SubtitleTrack { id, lang, url });
-        }
+
+    for (id, lang_code, url) in raw_tracks {
+        let clean_name = clean_language_name(&lang_code);
+        let count = lang_counts.entry(clean_name.to_string()).or_insert(0);
+        *count += 1;
+        let formatted_label = format!("{} #{}", clean_name, count);
+        tracks.push(SubtitleTrack {
+            id,
+            lang: formatted_label,
+            url,
+        });
     }
 
-    log_info(&format!("Found {} subtitle tracks via standard metadata.", tracks.len()));
+    log_info(&format!("Discovered {} deduplicated subtitle tracks.", tracks.len()));
     Ok(tracks)
 }
 

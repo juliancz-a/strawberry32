@@ -1,5 +1,5 @@
 import { Theme } from "../theme.slint";
-import { ScrollView, LineEdit, Button } from "std-widgets.slint";
+import { ScrollView, LineEdit } from "std-widgets.slint";
 
 export struct AddonItem {
     id: string,
@@ -7,6 +7,40 @@ export struct AddonItem {
     version: string,
     description: string,
     enabled: bool,
+}
+
+component SettingsButton inherits Rectangle {
+    in property <string> text: "";
+    in property <bool> is_accent: false;
+    callback clicked();
+
+    height: 34px;
+    min-width: 80px;
+    border-radius: 6px;
+    background: root.is_accent ? (btn_touch.pressed ? Theme.accent-pressed : (btn_touch.has-hover ? #ff709e : Theme.accent))
+                               : (btn_touch.pressed ? #1e1e24 : (btn_touch.has-hover ? #2e2e36 : #26262b));
+    border-width: 1px;
+    border-color: root.is_accent ? Theme.accent : (btn_touch.has-hover ? #50525c : #383842);
+
+    btn_touch := TouchArea {
+        width: 100%;
+        height: 100%;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        alignment: center;
+        Text {
+            text: root.text;
+            font-size: 13px;
+            font-weight: 600;
+            color: #f1f1f4;
+            vertical-alignment: center;
+        }
+    }
 }
 
 // Slint Software-Renderer friendly iOS/macOS styled Toggle switch
@@ -146,21 +180,25 @@ component SettingsTabButton inherits Rectangle {
     touch := TouchArea {
         width: 100%;
         height: 100%;
+        mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
 
     HorizontalLayout {
         padding-left: 14px;
         padding-right: 14px;
-        spacing: 10px;
+        spacing: 12px;
         alignment: start;
 
-        if root.icon.width > 0 : Image {
-            source: root.icon;
-            width: 16px;
-            height: 16px;
-            colorize: root.is_active ? Theme.accent : Theme.text-muted;
-            vertical-alignment: center;
+        VerticalLayout {
+            alignment: center;
+            width: 20px;
+            if root.icon.width > 0 : Image {
+                source: root.icon;
+                width: 18px;
+                height: 18px;
+                colorize: root.is_active ? Theme.accent : Theme.text-muted;
+            }
         }
 
         Text {
@@ -338,11 +376,13 @@ export component SettingsView inherits Rectangle {
 
             ScrollView {
                 VerticalLayout {
+                    alignment: start;
                     padding: 20px;
                     spacing: 16px;
 
                     // TAB 0: ADD-ONS MANAGER
                     if root.active_tab == 0 : VerticalLayout {
+                        alignment: start;
                         spacing: 14px;
 
                         Text {
@@ -354,15 +394,19 @@ export component SettingsView inherits Rectangle {
 
                         // Install Add-on Row
                         Rectangle {
+                            height: 54px;
                             background: Theme.surface-raised;
                             border-radius: 6px;
 
                             HorizontalLayout {
-                                padding: 10px;
+                                padding-left: 10px;
+                                padding-right: 10px;
                                 spacing: 10px;
-                                alignment: space-between;
+                                alignment: center;
 
                                 LineEdit {
+                                    horizontal-stretch: 1;
+                                    height: 34px;
                                     placeholder-text: "Paste manifest URL (e.g. https://... or stremio://...)";
                                     text <=> root.install_url_input;
                                     accepted => {
@@ -370,15 +414,16 @@ export component SettingsView inherits Rectangle {
                                     }
                                 }
 
-                                Button {
+                                SettingsButton {
                                     text: "Install Add-on";
+                                    is_accent: true;
                                     clicked => {
                                         root.install_addon_clicked(root.install_url_input);
                                     }
                                 }
 
-                                Button {
-                                    text: "Quick Setup (Cinemeta + Torrentio)";
+                                SettingsButton {
+                                    text: "Quick Setup";
                                     clicked => {
                                         root.quick_setup_clicked();
                                     }
@@ -388,12 +433,14 @@ export component SettingsView inherits Rectangle {
 
                         // Installed Add-ons List
                         for addon in root.addon_items : Rectangle {
+                            min-height: 76px;
                             background: Theme.surface-raised;
                             border-radius: 6px;
 
                             VerticalLayout {
-                                padding: 12px;
+                                padding: 10px;
                                 spacing: 6px;
+                                alignment: center;
 
                                 HorizontalLayout {
                                     alignment: space-between;
@@ -437,23 +484,31 @@ export component SettingsView inherits Rectangle {
                                         spacing: 6px;
                                         alignment: center;
 
-                                        Button {
+                                        SettingsButton {
                                             text: "▲";
+                                            min-width: 32px;
+                                            height: 28px;
                                             clicked => { root.priority_addon_clicked(addon.id, true); }
                                         }
 
-                                        Button {
+                                        SettingsButton {
                                             text: "▼";
+                                            min-width: 32px;
+                                            height: 28px;
                                             clicked => { root.priority_addon_clicked(addon.id, false); }
                                         }
 
-                                        Button {
+                                        SettingsButton {
                                             text: addon.enabled ? "Disable" : "Enable";
+                                            min-width: 64px;
+                                            height: 28px;
                                             clicked => { root.toggle_addon_clicked(addon.id); }
                                         }
 
-                                        Button {
+                                        SettingsButton {
                                             text: "Remove";
+                                            min-width: 64px;
+                                            height: 28px;
                                             clicked => { root.remove_addon_clicked(addon.id); }
                                         }
                                     }
@@ -461,9 +516,11 @@ export component SettingsView inherits Rectangle {
 
                                 Text {
                                     text: addon.description != "" ? addon.description : "No description provided.";
-                                    font-size: 12px;
+                                    font-size: 11px;
                                     color: Theme.text-muted;
                                     wrap: word-wrap;
+                                    overflow: elide;
+                                    max-height: 28px;
                                 }
                             }
                         }
@@ -471,6 +528,7 @@ export component SettingsView inherits Rectangle {
 
                     // TAB 1: PLAYBACK
                     if root.active_tab == 1 : VerticalLayout {
+                        alignment: start;
                         spacing: 12px;
 
                         Text {
@@ -546,6 +604,7 @@ export component SettingsView inherits Rectangle {
 
                     // TAB 2: STREAMING & CACHE
                     if root.active_tab == 2 : VerticalLayout {
+                        alignment: start;
                         spacing: 12px;
 
                         Text {
@@ -578,7 +637,7 @@ export component SettingsView inherits Rectangle {
                         FieldRow {
                             label: "Torrent Storage Usage";
                             description: root.torrent_cache_str;
-                            Button {
+                            SettingsButton {
                                 text: "Clear Torrent Chunks";
                                 clicked => { root.clear_torrent_cache_clicked(); }
                             }
@@ -587,7 +646,7 @@ export component SettingsView inherits Rectangle {
                         FieldRow {
                             label: "Poster Image LRU Disk Cache";
                             description: root.image_cache_str;
-                            Button {
+                            SettingsButton {
                                 text: "Clear Poster Cache";
                                 clicked => { root.clear_image_cache_clicked(); }
                             }
@@ -596,6 +655,7 @@ export component SettingsView inherits Rectangle {
 
                     // TAB 3: INTERFACE
                     if root.active_tab == 3 : VerticalLayout {
+                        alignment: start;
                         spacing: 12px;
 
                         Text {
@@ -634,6 +694,7 @@ export component SettingsView inherits Rectangle {
 
                     // TAB 4: DIAGNOSTICS & LOGS
                     if root.active_tab == 4 : VerticalLayout {
+                        alignment: start;
                         spacing: 12px;
 
                         Text {
@@ -673,7 +734,7 @@ export component SettingsView inherits Rectangle {
                                 color: Theme.accent;
                                 vertical-alignment: center;
                             }
-                            Button {
+                            SettingsButton {
                                 text: "Clear Logs";
                                 clicked => { root.clear_logs_clicked(); }
                             }
@@ -702,6 +763,7 @@ export component SettingsView inherits Rectangle {
 
                     // TAB 5: ABOUT
                     if root.active_tab == 5 : VerticalLayout {
+                        alignment: start;
                         spacing: 14px;
 
                         Text {

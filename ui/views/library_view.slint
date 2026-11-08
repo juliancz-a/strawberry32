@@ -7,10 +7,12 @@ export component LibraryView inherits Rectangle {
     callback card_selected(string, string);
     callback explore_clicked();
     callback clear_history_clicked();
+    callback request_lazy_range(int, int, int);
 
     background: Theme.bg;
 
     VerticalLayout {
+        alignment: start;
         padding-left: 20px;
         padding-right: 20px;
         padding-top: 16px;
@@ -113,11 +115,16 @@ export component LibraryView inherits Rectangle {
 
         if root.library_items.length > 0 : ScrollView {
             VerticalLayout {
+                alignment: start;
                 CatalogRow {
                     title: "Continue Watching (" + root.library_items.length + ")";
                     items: root.library_items;
+                    row_index: 20;
                     card_clicked(id, type) => {
                         root.card_selected(id, type);
+                    }
+                    request_lazy_range(row, start, end) => {
+                        root.request_lazy_range(row, start, end);
                     }
                 }
             }

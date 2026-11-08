@@ -566,9 +566,9 @@ pub fn add_or_update_addon(descriptor: AddonDescriptor) {
     save_addons_config(&cfg);
 }
 
-/// Setup defaults for Cinemeta and Torrentio
+/// Setup defaults for Cinemeta, Torrentio and OpenSubtitles v3
 pub fn setup_dev_default_addons() -> Result<(AddonDescriptor, AddonDescriptor), String> {
-    log_info("Registering Cinemeta and Torrentio in addons.json...");
+    log_info("Registering Cinemeta, Torrentio and OpenSubtitles v3 in addons.json...");
 
     let cinemeta = AddonDescriptor {
         transport_url: "https://v3-cinemeta.strem.io/manifest.json".to_string(),
@@ -611,9 +611,25 @@ pub fn setup_dev_default_addons() -> Result<(AddonDescriptor, AddonDescriptor), 
         priority: 1,
     };
 
+    let opensubtitles = AddonDescriptor {
+        transport_url: "https://opensubtitles-v3.strem.io/manifest.json".to_string(),
+        manifest: Manifest {
+            id: "org.stremio.opensubtitlesv3".to_string(),
+            name: "OpenSubtitles v3".to_string(),
+            version: "1.0.0".to_string(),
+            description: Some("Official OpenSubtitles v3 provider for Stremio".to_string()),
+            types: vec!["movie".to_string(), "series".to_string()],
+            catalogs: vec![],
+            resources: vec![serde_json::json!("subtitles")],
+        },
+        enabled: true,
+        priority: 2,
+    };
+
     add_or_update_addon(cinemeta.clone());
     add_or_update_addon(torrentio.clone());
+    add_or_update_addon(opensubtitles);
 
-    log_info("Cinemeta and Torrentio configured successfully.");
+    log_info("Default addons configured successfully.");
     Ok((cinemeta, torrentio))
 }
