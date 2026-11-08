@@ -1,0 +1,221 @@
+import { Theme } from "../theme.slint";
+
+export component HeroBanner inherits Rectangle {
+    in property <string> title: "Welcome to Strawberry32";
+    in property <string> meta_line: "2025 • Trending Now • ★ 8.4 • HD";
+    in property <string> description: "Stream your favorite movies and series directly on Windows RT with hardware acceleration.";
+    in property <string> item_id: "";
+    in property <string> item_type: "movie";
+    in property <image> backdrop;
+    in property <bool> has_backdrop: false;
+    in property <int> hero_index: 0;
+    in property <int> hero_total: 5;
+
+    callback play_clicked(string, string);
+    callback details_clicked(string, string);
+    callback prev_clicked();
+    callback next_clicked();
+
+    height: 300px;
+    background: Theme.surface;
+    border-radius: 8px;
+    clip: true;
+
+    // Backdrop Image
+    if root.has_backdrop : Image {
+        width: 100%;
+        height: 100%;
+        source: root.backdrop;
+        image-fit: cover;
+    }
+
+    // Scrim overlay for readability across the entire backdrop
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #100f1480;
+    }
+
+    VerticalLayout {
+        padding-left: 28px;
+        padding-right: 28px;
+        padding-top: 24px;
+        padding-bottom: 24px;
+        alignment: space-between;
+
+        // Top Content
+        VerticalLayout {
+            spacing: 8px;
+            max-width: 580px;
+
+            // Metadata row (Badge + Year + Rating + Genre)
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+
+                Rectangle {
+                    width: 60px;
+                    height: 22px;
+                    background: root.item_type == "movie" ? Theme.violet : Theme.violet-soft;
+                    border-radius: 4px;
+                    Text {
+                        text: root.item_type == "movie" ? "MOVIE" : "SERIES";
+                        font-size: 11px;
+                        font-weight: 700;
+                        color: #ffffff;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Text {
+                    text: root.meta_line;
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: Theme.accent;
+                    vertical-alignment: center;
+                }
+            }
+
+            // Big Title
+            Text {
+                text: root.title;
+                font-size: 28px;
+                font-weight: 800;
+                color: #ffffff;
+                overflow: elide;
+                max-height: 70px;
+                wrap: word-wrap;
+            }
+
+            // Synopsis description
+            Text {
+                text: root.description;
+                font-size: 13px;
+                color: #d0d0d8;
+                overflow: elide;
+                max-height: 58px;
+                wrap: word-wrap;
+            }
+        }
+
+        // Bottom Controls Row: Play & Details buttons on left; Prev/Next pager on right
+        HorizontalLayout {
+            alignment: space-between;
+
+            HorizontalLayout {
+                spacing: 12px;
+                alignment: start;
+
+                // Play Accent Button
+                Rectangle {
+                    width: 140px;
+                    height: 40px;
+                    background: play_touch.pressed ? Theme.accent-pressed : (play_touch.has-hover ? #ff709e : Theme.accent);
+                    border-radius: 6px;
+
+                    play_touch := TouchArea {
+                        width: 100%;
+                        height: 100%;
+                        clicked => {
+                            root.play_clicked(root.item_id, root.item_type);
+                        }
+                    }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 8px;
+                        Text {
+                            text: "▶ Play";
+                            font-size: 14px;
+                            font-weight: 700;
+                            color: #ffffff;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // Details Button
+                Rectangle {
+                    width: 120px;
+                    height: 40px;
+                    background: det_touch.pressed ? Theme.surface-raised : (det_touch.has-hover ? Theme.surface-hover : Theme.surface);
+                    border-radius: 6px;
+                    border-width: 1px;
+                    border-color: Theme.surface-raised;
+
+                    det_touch := TouchArea {
+                        width: 100%;
+                        height: 100%;
+                        clicked => {
+                            root.details_clicked(root.item_id, root.item_type);
+                        }
+                    }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        Text {
+                            text: "ℹ Details";
+                            font-size: 13px;
+                            font-weight: 600;
+                            color: #ffffff;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            // Pager rotation buttons on right
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: end;
+
+                Rectangle {
+                    width: 36px;
+                    height: 36px;
+                    background: prev_touch.pressed ? Theme.accent : (prev_touch.has-hover ? Theme.surface-hover : #1c1d20a0);
+                    border-radius: 6px;
+                    border-width: 1px;
+                    border-color: #333438;
+
+                    prev_touch := TouchArea {
+                        width: 100%;
+                        height: 100%;
+                        clicked => { root.prev_clicked(); }
+                    }
+
+                    Text {
+                        text: "◀";
+                        color: #ffffff;
+                        font-size: 13px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Rectangle {
+                    width: 36px;
+                    height: 36px;
+                    background: next_touch.pressed ? Theme.accent : (next_touch.has-hover ? Theme.surface-hover : #1c1d20a0);
+                    border-radius: 6px;
+                    border-width: 1px;
+                    border-color: #333438;
+
+                    next_touch := TouchArea {
+                        width: 100%;
+                        height: 100%;
+                        clicked => { root.next_clicked(); }
+                    }
+
+                    Text {
+                        text: "▶";
+                        color: #ffffff;
+                        font-size: 13px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}

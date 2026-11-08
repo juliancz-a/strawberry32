@@ -1,0 +1,722 @@
+import { Theme } from "../theme.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export struct StreamItem {
+    idx: int,
+    display_title: string,
+    badge: string,
+    badge_color: color,
+    quality: string,
+    size: string,
+    audio_codec: string,
+    seeders: int,
+    is_mp4: bool,
+}
+
+export struct EpisodeItem {
+    id: string,
+    season: int,
+    episode: int,
+    title: string,
+    released: string,
+    overview: string,
+}
+
+component StreamCard inherits Rectangle {
+    in property <StreamItem> stream;
+    callback play_clicked(int);
+    callback vlc_clicked(int);
+
+    height: 68px;
+    background: Theme.surface;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: Theme.surface-raised;
+
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        padding-top: 8px;
+        padding-bottom: 8px;
+        spacing: 12px;
+        alignment: space-between;
+
+        // Left info section (Two clean lines)
+        VerticalLayout {
+            spacing: 5px;
+            alignment: center;
+
+            // Line 1: Clean Release Title
+            Text {
+                text: root.stream.display_title;
+                font-size: 13px;
+                font-weight: 700;
+                color: Theme.text;
+                overflow: elide;
+                max-width: 580px;
+            }
+
+            // Line 2: Formatted metadata row
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+
+                // Compatibility badge
+                Rectangle {
+                    width: 95px;
+                    height: 20px;
+                    background: root.stream.badge_color;
+                    border-radius: 3px;
+
+                    Text {
+                        text: root.stream.badge;
+                        font-size: 10px;
+                        font-weight: 700;
+                        color: #ffffff;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Text {
+                    text: "Res: " + root.stream.quality;
+                    font-size: 11px;
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    text: "•";
+                    font-size: 11px;
+                    color: Theme.text-faint;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    text: "Audio: " + root.stream.audio_codec;
+                    font-size: 11px;
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    text: "•";
+                    font-size: 11px;
+                    color: Theme.text-faint;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    text: "Size: " + root.stream.size;
+                    font-size: 11px;
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    text: "•";
+                    font-size: 11px;
+                    color: Theme.text-faint;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    text: "Seeds: " + root.stream.seeders;
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: root.stream.seeders >= 10 ? Theme.ok : Theme.danger-text;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // Action Buttons on Right
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: center;
+
+            // Play Accent Button
+            Rectangle {
+                width: 76px;
+                height: 36px;
+                background: play_touch.pressed ? Theme.accent-pressed : (play_touch.has-hover ? #ff709e : Theme.accent);
+                border-radius: 6px;
+
+                play_touch := TouchArea {
+                    width: 100%;
+                    height: 100%;
+                    clicked => {
+                        root.play_clicked(root.stream.idx);
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: center;
+                    Text {
+                        text: "▶ Play";
+                        font-size: 13px;
+                        font-weight: 700;
+                        color: #ffffff;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            // VLC Button
+            Rectangle {
+                width: 64px;
+                height: 36px;
+                background: vlc_touch.pressed ? Theme.surface-raised : (vlc_touch.has-hover ? Theme.surface-hover : Theme.surface-raised);
+                border-radius: 6px;
+                border-width: 1px;
+                border-color: Theme.surface-hover;
+
+                vlc_touch := TouchArea {
+                    width: 100%;
+                    height: 100%;
+                    clicked => {
+                        root.vlc_clicked(root.stream.idx);
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: center;
+                    Text {
+                        text: "🚀 VLC";
+                        font-size: 12px;
+                        font-weight: 600;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component DetailView inherits Rectangle {
+    in property <string> detail_id: "";
+    in property <string> detail_title: "";
+    in property <string> detail_type: "";
+    in property <string> detail_year: "";
+    in property <string> detail_desc: "";
+    in property <image> detail_poster;
+    in property <image> detail_backdrop;
+    in property <bool> has_detail_backdrop: false;
+    in property <bool> detail_is_series: false;
+    in property <string> detail_imdb_rating: "";
+    in property <string> detail_runtime: "";
+    in property <string> detail_genres: "";
+    in property <string> detail_cast: "";
+    in property <string> detail_director: "";
+
+    // Series episode selector properties
+    in property <[int]> seasons_list: [];
+    in-out property <int> selected_season: 1;
+    in-out property <int> selected_episode: 1;
+    in-out property <string> selected_episode_title: "";
+    in-out property <string> selected_episode_overview: "";
+    in-out property <string> selected_episode_released: "";
+    in property <[EpisodeItem]> episode_items: [];
+
+    in property <[StreamItem]> stream_items: [];
+    in property <bool> is_streams_loading: false;
+
+    callback back_clicked();
+    callback play_stream_clicked(int);
+    callback play_vlc_clicked(int);
+    callback fetch_episode_streams(string, int, int);
+    callback play_best_match();
+    callback season_selected(int);
+
+    background: Theme.bg;
+
+    VerticalLayout {
+        padding-left: 20px;
+        padding-right: 20px;
+        padding-top: 14px;
+        padding-bottom: 14px;
+        spacing: 14px;
+
+        // Top Navigation Header
+        HorizontalLayout {
+            spacing: 14px;
+            alignment: space-between;
+
+            HorizontalLayout {
+                spacing: 12px;
+                alignment: center;
+
+                // Back Button
+                Rectangle {
+                    width: 90px;
+                    height: 34px;
+                    background: back_touch.pressed ? Theme.surface-raised : (back_touch.has-hover ? Theme.surface-hover : Theme.surface);
+                    border-radius: 6px;
+                    border-width: 1px;
+                    border-color: Theme.surface-raised;
+
+                    back_touch := TouchArea {
+                        width: 100%;
+                        height: 100%;
+                        clicked => {
+                            root.back_clicked();
+                        }
+                    }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        Text {
+                            text: "← Back";
+                            font-size: 13px;
+                            font-weight: 700;
+                            color: Theme.text;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                Text {
+                    text: root.detail_title;
+                    font-size: 20px;
+                    font-weight: 800;
+                    color: Theme.text;
+                    overflow: elide;
+                    max-width: 480px;
+                    vertical-alignment: center;
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: center;
+
+                Rectangle {
+                    width: 64px;
+                    height: 24px;
+                    background: root.detail_type == "movie" ? Theme.violet : Theme.violet-soft;
+                    border-radius: 4px;
+                    Text {
+                        text: root.detail_type == "movie" ? "MOVIE" : "SERIES";
+                        font-size: 11px;
+                        font-weight: 700;
+                        color: Theme.text;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Text {
+                    text: root.detail_year;
+                    font-size: 13px;
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // Main Scrollable Content
+        ScrollView {
+            VerticalLayout {
+                spacing: 16px;
+
+                // Hero Details Card with optional backdrop
+                Rectangle {
+                    height: 190px;
+                    background: Theme.surface;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: Theme.surface-raised;
+                    clip: true;
+
+                    // Backdrop if present
+                    if root.has_detail_backdrop : Image {
+                        width: 100%;
+                        height: 100%;
+                        source: root.detail_backdrop;
+                        image-fit: cover;
+                        opacity: 0.22;
+                    }
+
+                    HorizontalLayout {
+                        padding: 12px;
+                        spacing: 16px;
+
+                        // Poster placeholder / thumbnail
+                        Rectangle {
+                            width: 110px;
+                            height: 165px;
+                            background: Theme.surface-raised;
+                            border-radius: 6px;
+                            clip: true;
+
+                            if root.detail_poster.width > 0 : Image {
+                                width: 100%;
+                                height: 100%;
+                                source: root.detail_poster;
+                            }
+
+                            if root.detail_poster.width == 0 : Text {
+                                text: "🎬";
+                                font-size: 32px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        // Rich metadata details
+                        VerticalLayout {
+                            spacing: 6px;
+                            alignment: space-between;
+
+                            VerticalLayout {
+                                spacing: 4px;
+
+                                Text {
+                                    text: root.detail_title;
+                                    font-size: 20px;
+                                    font-weight: 800;
+                                    color: Theme.text;
+                                    overflow: elide;
+                                }
+
+                                // Badges row (Year, Rating, Runtime, Genres)
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    alignment: start;
+
+                                    if root.detail_imdb_rating != "" : Rectangle {
+                                        height: 20px;
+                                        background: #e5a00d;
+                                        border-radius: 3px;
+                                        HorizontalLayout {
+                                            padding-left: 6px;
+                                            padding-right: 6px;
+                                            alignment: center;
+                                            Text {
+                                                text: "★ " + root.detail_imdb_rating;
+                                                font-size: 11px;
+                                                font-weight: 800;
+                                                color: #000000;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+
+                                    if root.detail_runtime != "" : Text {
+                                        text: root.detail_runtime;
+                                        font-size: 12px;
+                                        font-weight: 600;
+                                        color: Theme.text-muted;
+                                        vertical-alignment: center;
+                                    }
+
+                                    if root.detail_genres != "" : Text {
+                                        text: "• " + root.detail_genres;
+                                        font-size: 12px;
+                                        color: Theme.accent;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                    }
+                                }
+
+                                Text {
+                                    text: root.detail_desc != "" ? root.detail_desc : "No synopsis available for this title.";
+                                    font-size: 12px;
+                                    color: Theme.text-muted;
+                                    wrap: word-wrap;
+                                    overflow: elide;
+                                    max-height: 34px;
+                                }
+
+                                if root.detail_cast != "" : Text {
+                                    text: "Cast: " + root.detail_cast;
+                                    font-size: 11px;
+                                    color: Theme.text-faint;
+                                    overflow: elide;
+                                    max-height: 16px;
+                                }
+                            }
+
+                            // Prominent "Play Best Match" Button
+                            if root.stream_items.length > 0 : Rectangle {
+                                width: 160px;
+                                height: 34px;
+                                background: best_touch.pressed ? Theme.accent-pressed : (best_touch.has-hover ? #ff709e : Theme.accent);
+                                border-radius: 6px;
+
+                                best_touch := TouchArea {
+                                    width: 100%;
+                                    height: 100%;
+                                    clicked => {
+                                        root.play_best_match();
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    alignment: center;
+                                    spacing: 6px;
+                                    Text {
+                                        text: "▶ Play Best Match";
+                                        font-size: 13px;
+                                        font-weight: 700;
+                                        color: #ffffff;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Series Season & Episode Picker (if series)
+                if root.detail_is_series : VerticalLayout {
+                    spacing: 10px;
+
+                    // Season Selector Pills Row
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+
+                        Text {
+                            text: "Season:";
+                            font-size: 13px;
+                            font-weight: 700;
+                            color: Theme.text;
+                            vertical-alignment: center;
+                        }
+
+                        for s in root.seasons_list : Rectangle {
+                            height: 28px;
+                            background: s == root.selected_season ? Theme.accent : Theme.surface;
+                            border-radius: 5px;
+                            border-width: 1px;
+                            border-color: s == root.selected_season ? Theme.accent : Theme.surface-raised;
+
+                            TouchArea {
+                                width: 100%;
+                                height: 100%;
+                                clicked => {
+                                    root.selected_season = s;
+                                    root.season_selected(s);
+                                }
+                            }
+
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                alignment: center;
+                                Text {
+                                    text: "Season " + s;
+                                    font-size: 12px;
+                                    font-weight: s == root.selected_season ? 700 : 500;
+                                    color: s == root.selected_season ? #ffffff : Theme.text;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+
+                    // Compact Episode Buttons Row (Clean, horizontal scrolling)
+                    flick_episodes := Flickable {
+                        height: 52px;
+                        content-width: root.episode_items.length * 168px;
+                        content-height: self.height;
+
+                        HorizontalLayout {
+                            spacing: 8px;
+
+                            for ep in root.episode_items : Rectangle {
+                                width: 160px;
+                                height: 48px;
+                                background: ep.episode == root.selected_episode ? Theme.surface-raised : Theme.surface;
+                                border-radius: 6px;
+                                border-width: ep.episode == root.selected_episode ? 2px : 1px;
+                                border-color: ep.episode == root.selected_episode ? Theme.accent : Theme.surface-raised;
+
+                                TouchArea {
+                                    width: 100%;
+                                    height: 100%;
+                                    clicked => {
+                                        root.selected_episode = ep.episode;
+                                        root.selected_episode_title = ep.title != "" ? ep.title : "Episode " + ep.episode;
+                                        root.selected_episode_overview = ep.overview != "" ? ep.overview : "No synopsis available for this episode.";
+                                        root.selected_episode_released = ep.released;
+                                        root.fetch_episode_streams(root.detail_id, ep.season, ep.episode);
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    spacing: 8px;
+                                    alignment: start;
+
+                                    // Episode Number Badge
+                                    Rectangle {
+                                        width: 44px;
+                                        height: 24px;
+                                        background: ep.episode == root.selected_episode ? Theme.accent : Theme.surface-raised;
+                                        border-radius: 4px;
+                                        y: 12px;
+
+                                        Text {
+                                            text: "EP " + ep.episode;
+                                            font-size: 11px;
+                                            font-weight: 800;
+                                            color: #ffffff;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    // Episode Title & Release Info (No cramped paragraphs!)
+                                    VerticalLayout {
+                                        spacing: 2px;
+                                        alignment: center;
+
+                                        Text {
+                                            text: ep.title != "" ? ep.title : "Episode " + ep.episode;
+                                            font-size: 12px;
+                                            font-weight: 700;
+                                            color: ep.episode == root.selected_episode ? Theme.accent : Theme.text;
+                                            overflow: elide;
+                                            max-width: 90px;
+                                        }
+
+                                        Text {
+                                            text: ep.released != "" ? ep.released : "Episode " + ep.episode;
+                                            font-size: 10px;
+                                            color: Theme.text-muted;
+                                            overflow: elide;
+                                            max-width: 90px;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Dedicated Episode Inspector Banner (Spacious, elegant overview of selected episode)
+                    Rectangle {
+                        background: Theme.surface;
+                        border-radius: 8px;
+                        border-width: 1px;
+                        border-color: Theme.surface-raised;
+
+                        VerticalLayout {
+                            padding: 14px;
+                            spacing: 8px;
+
+                            HorizontalLayout {
+                                alignment: space-between;
+                                spacing: 12px;
+
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    alignment: center;
+
+                                    Rectangle {
+                                        width: 76px;
+                                        height: 22px;
+                                        background: Theme.accent;
+                                        border-radius: 4px;
+                                        Text {
+                                            text: "EPISODE " + root.selected_episode;
+                                            font-size: 11px;
+                                            font-weight: 800;
+                                            color: #ffffff;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    Text {
+                                        text: root.selected_episode_title != "" ? root.selected_episode_title : "Episode " + root.selected_episode;
+                                        font-size: 15px;
+                                        font-weight: 800;
+                                        color: Theme.text;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                        max-width: 520px;
+                                    }
+                                }
+
+                                if root.selected_episode_released != "" : Text {
+                                    text: "Air date: " + root.selected_episode_released;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    color: Theme.text-muted;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            Text {
+                                text: root.selected_episode_overview != "" ? root.selected_episode_overview : "No synopsis available for this episode.";
+                                font-size: 13px;
+                                color: Theme.text-muted;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+
+                // Sources Header
+                HorizontalLayout {
+                    alignment: space-between;
+
+                    Text {
+                        text: "Available Streams (" + root.stream_items.length + " sorted by Tegra 3 compatibility)";
+                        font-size: 14px;
+                        font-weight: 700;
+                        color: Theme.accent;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Loading State
+                if root.is_streams_loading : Rectangle {
+                    height: 80px;
+                    background: Theme.surface;
+                    border-radius: 6px;
+                    Text {
+                        text: "Querying Torrentio for compatible streams...";
+                        font-size: 14px;
+                        color: Theme.text-muted;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Empty State
+                if !root.is_streams_loading && root.stream_items.length == 0 : Rectangle {
+                    height: 80px;
+                    background: Theme.surface;
+                    border-radius: 6px;
+                    Text {
+                        text: "No compatible H.264 streams found for this title.";
+                        font-size: 14px;
+                        color: Theme.danger-text;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Stream Cards List
+                if !root.is_streams_loading && root.stream_items.length > 0 : VerticalLayout {
+                    spacing: 8px;
+
+                    for stream[i] in root.stream_items : StreamCard {
+                        stream: stream;
+                        play_clicked(idx) => {
+                            root.play_stream_clicked(idx);
+                        }
+                        vlc_clicked(idx) => {
+                            root.play_vlc_clicked(idx);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

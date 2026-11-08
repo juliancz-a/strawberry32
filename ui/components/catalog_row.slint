@@ -41,8 +41,10 @@ component ChevronButton inherits Rectangle {
 export component CatalogRow inherits VerticalLayout {
     in property <string> title: "Catalog Row";
     in property <[CatalogItem]> items: [];
+    in property <int> row_index: 0;
 
     callback card_clicked(string, string);
+    callback request_lazy_range(int, int, int);
 
     spacing: 8px;
 
@@ -66,6 +68,7 @@ export component CatalogRow inherits VerticalLayout {
                 text: "◀";
                 clicked => {
                     flick.content-x = min(0px, flick.content-x + 468px);
+                    root.request_lazy_range(root.row_index, 0, 10);
                 }
             }
 
@@ -73,6 +76,7 @@ export component CatalogRow inherits VerticalLayout {
                 text: "▶";
                 clicked => {
                     flick.content-x = max(- (root.items.length * 156px - flick.width), flick.content-x - 468px);
+                    root.request_lazy_range(root.row_index, 6, 20);
                 }
             }
         }

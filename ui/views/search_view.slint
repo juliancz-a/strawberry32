@@ -1,0 +1,207 @@
+import { Theme } from "../theme.slint";
+import { CatalogRow, CatalogItem } from "../components/catalog_row.slint";
+import { ScrollView, LineEdit } from "std-widgets.slint";
+
+export component SearchView inherits Rectangle {
+    in-out property <string> search_text: "";
+    in-out property <string> active_filter: "all";
+    in property <[CatalogItem]> movie_results: [];
+    in property <[CatalogItem]> series_results: [];
+    in property <bool> is_searching: false;
+
+    callback search_submitted(string);
+    callback filter_clicked(string);
+    callback card_selected(string, string);
+    callback request_lazy_range(int, int, int);
+
+    background: Theme.bg;
+
+    VerticalLayout {
+        padding-left: 20px;
+        padding-right: 20px;
+        padding-top: 16px;
+        padding-bottom: 16px;
+        spacing: 16px;
+
+        // Search Bar Row
+        HorizontalLayout {
+            spacing: 12px;
+
+            search_input := LineEdit {
+                placeholder-text: "Search movies, series, anime...";
+                text <=> root.search_text;
+                accepted => {
+                    root.search_submitted(self.text);
+                }
+            }
+
+            // Search Button
+            Rectangle {
+                width: 100px;
+                height: 38px;
+                background: btn_touch.pressed ? Theme.accent-pressed : (btn_touch.has-hover ? #ff709e : Theme.accent);
+                border-radius: 6px;
+
+                btn_touch := TouchArea {
+                    width: 100%;
+                    height: 100%;
+                    clicked => {
+                        root.search_submitted(root.search_text);
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: center;
+                    Text {
+                        text: "🔍 Search";
+                        font-size: 13px;
+                        font-weight: 700;
+                        color: #ffffff;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // Filter Chips Row
+        HorizontalLayout {
+            spacing: 10px;
+
+            // All Chip
+            Rectangle {
+                width: 80px;
+                height: 32px;
+                background: root.active_filter == "all" ? Theme.accent : Theme.surface-raised;
+                border-radius: 6px;
+
+                TouchArea {
+                    width: 100%;
+                    height: 100%;
+                    clicked => { root.filter_clicked("all"); }
+                }
+
+                Text {
+                    text: "All";
+                    font-size: 12px;
+                    font-weight: root.active_filter == "all" ? 700 : 500;
+                    color: root.active_filter == "all" ? #ffffff : Theme.text;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            // Movies Chip
+            Rectangle {
+                width: 80px;
+                height: 32px;
+                background: root.active_filter == "movie" ? Theme.accent : Theme.surface-raised;
+                border-radius: 6px;
+
+                TouchArea {
+                    width: 100%;
+                    height: 100%;
+                    clicked => { root.filter_clicked("movie"); }
+                }
+
+                Text {
+                    text: "Movies";
+                    font-size: 12px;
+                    font-weight: root.active_filter == "movie" ? 700 : 500;
+                    color: root.active_filter == "movie" ? #ffffff : Theme.text;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            // Series Chip
+            Rectangle {
+                width: 80px;
+                height: 32px;
+                background: root.active_filter == "series" ? Theme.accent : Theme.surface-raised;
+                border-radius: 6px;
+
+                TouchArea {
+                    width: 100%;
+                    height: 100%;
+                    clicked => { root.filter_clicked("series"); }
+                }
+
+                Text {
+                    text: "Series";
+                    font-size: 12px;
+                    font-weight: root.active_filter == "series" ? 700 : 500;
+                    color: root.active_filter == "series" ? #ffffff : Theme.text;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // Search Content / Results
+        if root.is_searching : Rectangle {
+            background: Theme.surface;
+            border-radius: 8px;
+            height: 120px;
+            Text {
+                text: "Searching Cinemeta & Stremio Addons...";
+                font-size: 14px;
+                color: Theme.text-muted;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        if !root.is_searching && root.movie_results.length == 0 && root.series_results.length == 0 : Rectangle {
+            background: Theme.surface;
+            border-radius: 8px;
+            height: 180px;
+            VerticalLayout {
+                alignment: center;
+                spacing: 8px;
+                Text {
+                    text: root.search_text == "" ? "🔍 Search Cinemeta" : "No results found for \"" + root.search_text + "\"";
+                    font-size: 16px;
+                    font-weight: 700;
+                    color: Theme.text;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: root.search_text == "" ? "Enter a movie or series title above and press Search" : "Try searching with a different keyword or filter";
+                    font-size: 13px;
+                    color: Theme.text-muted;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+
+        if !root.is_searching && (root.movie_results.length > 0 || root.series_results.length > 0) : ScrollView {
+            VerticalLayout {
+                spacing: 16px;
+
+                if (root.active_filter == "all" || root.active_filter == "movie") && root.movie_results.length > 0 : CatalogRow {
+                    title: "Movies (" + root.movie_results.length + " titles)";
+                    items: root.movie_results;
+                    row_index: 10;
+                    card_clicked(id, type) => {
+                        root.card_selected(id, type);
+                    }
+                    request_lazy_range(row, start, end) => {
+                        root.request_lazy_range(row, start, end);
+                    }
+                }
+
+                if (root.active_filter == "all" || root.active_filter == "series") && root.series_results.length > 0 : CatalogRow {
+                    title: "Series (" + root.series_results.length + " titles)";
+                    items: root.series_results;
+                    row_index: 11;
+                    card_clicked(id, type) => {
+                        root.card_selected(id, type);
+                    }
+                    request_lazy_range(row, start, end) => {
+                        root.request_lazy_range(row, start, end);
+                    }
+                }
+            }
+        }
+    }
+}

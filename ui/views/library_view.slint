@@ -1,0 +1,93 @@
+import { Theme } from "../theme.slint";
+import { CatalogRow, CatalogItem } from "../components/catalog_row.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export component LibraryView inherits Rectangle {
+    in property <[CatalogItem]> library_items: [];
+    callback card_selected(string, string);
+    callback explore_clicked();
+
+    background: Theme.bg;
+
+    VerticalLayout {
+        padding-left: 20px;
+        padding-right: 20px;
+        padding-top: 16px;
+        padding-bottom: 16px;
+        spacing: 16px;
+
+        Text {
+            text: "📚 My Library & Watch History";
+            font-size: 20px;
+            font-weight: 800;
+            color: Theme.text;
+        }
+
+        if root.library_items.length == 0 : Rectangle {
+            background: Theme.surface;
+            border-radius: 8px;
+            height: 200px;
+
+            VerticalLayout {
+                alignment: center;
+                spacing: 12px;
+
+                Text {
+                    text: "Your library is empty";
+                    font-size: 16px;
+                    font-weight: 700;
+                    color: Theme.text;
+                    horizontal-alignment: center;
+                }
+
+                Text {
+                    text: "Movies and series you watch will automatically be saved here so you can easily continue watching.";
+                    font-size: 13px;
+                    color: Theme.text-muted;
+                    horizontal-alignment: center;
+                }
+
+                HorizontalLayout {
+                    alignment: center;
+
+                    Rectangle {
+                        width: 140px;
+                        height: 36px;
+                        background: exp_touch.pressed ? Theme.accent-pressed : (exp_touch.has-hover ? #ff709e : Theme.accent);
+                        border-radius: 6px;
+
+                        exp_touch := TouchArea {
+                            width: 100%;
+                            height: 100%;
+                            clicked => { root.explore_clicked(); }
+                        }
+
+                        HorizontalLayout {
+                            alignment: center;
+                            Text {
+                                text: "Explore Movies";
+                                font-size: 13px;
+                                font-weight: 700;
+                                color: #ffffff;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.library_items.length > 0 : ScrollView {
+            VerticalLayout {
+                CatalogRow {
+                    title: "Continue Watching (" + root.library_items.length + ")";
+                    items: root.library_items;
+                    card_clicked(id, type) => {
+                        root.card_selected(id, type);
+                    }
+                }
+            }
+        }
+    }
+}
+

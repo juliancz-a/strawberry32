@@ -51,6 +51,28 @@ extern "system" {
     fn CoInitializeEx(pvReserved: *mut c_void, dwCoInit: u32) -> HRESULT;
 }
 
+#[link(name = "kernel32")]
+extern "system" {
+    fn SetThreadExecutionState(esFlags: u32) -> u32;
+}
+
+const ES_CONTINUOUS: u32 = 0x80000000;
+const ES_DISPLAY_REQUIRED: u32 = 0x00000002;
+const ES_SYSTEM_REQUIRED: u32 = 0x00000001;
+
+/// Prevents the Surface RT screen from sleeping / blanking during playback
+pub fn prevent_sleep(enable: bool) {
+    unsafe {
+        if enable {
+            SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED);
+            log_player("System sleep prevention activated (ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED).");
+        } else {
+            SetThreadExecutionState(ES_CONTINUOUS);
+            log_player("System sleep prevention cleared.");
+        }
+    }
+}
+
 #[allow(non_snake_case)]
 type MFPCreateMediaPlayerFn = unsafe extern "system" fn(
     pwszURL: *const u16,
@@ -185,6 +207,7 @@ pub fn init_embedded_player(video_hwnd: HWND, stream_url: &str) -> Result<(), St
 
     match init_media_foundation_player(video_hwnd, stream_url) {
         Ok(p_player) => {
+            prevent_sleep(true);
             let mut guard = EMBEDDED_PLAYER.lock().unwrap();
             *guard = Some(EmbeddedPlayerState {
                 p_player,
@@ -203,6 +226,7 @@ pub fn init_embedded_player(video_hwnd: HWND, stream_url: &str) -> Result<(), St
 
 /// Stops the embedded player and cleanly releases all COM resources
 pub fn stop_embedded_player() {
+    prevent_sleep(false);
     let mut guard = EMBEDDED_PLAYER.lock().unwrap();
     if let Some(state) = guard.take() {
         unsafe {
@@ -242,6 +266,9 @@ pub fn update_video_position(_left: i32, _top: i32, _width: i32, _height: i32) {
                 // Only call UpdateVideo if player has resolved and is not Empty (0) or Shutdown (4)
                 if hr_state >= 0 && st >= 1 && st <= 3 {
                     let _ = com_call_0(state.p_player, 32); // UpdateVideo
+                    if !state.video_hwnd.is_null() {
+                        windows_sys::Win32::Graphics::Gdi::UpdateWindow(state.video_hwnd);
+                    }
                 }
             }
         }
@@ -257,8 +284,10 @@ pub fn toggle_pause() -> Result<bool, String> {
             if !state.p_player.is_null() {
                 if state.is_paused {
                     let _ = com_call_0(state.p_player, 3); // Play
+                    prevent_sleep(true);
                 } else {
                     let _ = com_call_0(state.p_player, 4); // Pause
+                    prevent_sleep(false);
                 }
             }
             state.is_paused = new_paused;
@@ -268,6 +297,99 @@ pub fn toggle_pause() -> Result<bool, String> {
     } else {
         Err("No active player".to_string())
     }
+}
+
+/// Sets playback volume (0.0 to 1.0) via IMFPMediaPlayer::SetVolume (vtable index 20)
+pub fn set_volume(volume: f32) -> Result<(), String> {
+    let guard = EMBEDDED_PLAYER.lock().unwrap();
+    if let Some(state) = guard.as_ref() {
+        unsafe {
+            if !state.p_player.is_null() {
+                let clamped = volume.clamp(0.0, 1.0);
+                let hr = com_call_1(state.p_player, 20, clamped);
+                if hr >= 0 {
+                    log_player(&format!("Volume set to {:.0}%", clamped * 100.0));
+                    return Ok(());
+                } else {
+                    return Err(format!("SetVolume returned 0x{:08X}", hr as u32));
+                }
+            }
+        }
+    }
+    Err("No active player".to_string())
+}
+
+/// Gets current playback volume (0.0 to 1.0) via IMFPMediaPlayer::GetVolume (vtable index 19)
+pub fn get_volume() -> f32 {
+    let guard = EMBEDDED_PLAYER.lock().unwrap();
+    if let Some(state) = guard.as_ref() {
+        unsafe {
+            if !state.p_player.is_null() {
+                let mut vol: f32 = 1.0;
+                let hr = com_call_1(state.p_player, 19, &mut vol as *mut f32);
+                if hr >= 0 {
+                    return vol.clamp(0.0, 1.0);
+                }
+            }
+        }
+    }
+    1.0
+}
+
+/// Sets audio mute state via IMFPMediaPlayer::SetMute (vtable index 22)
+pub fn set_muted(mute: bool) -> Result<(), String> {
+    let guard = EMBEDDED_PLAYER.lock().unwrap();
+    if let Some(state) = guard.as_ref() {
+        unsafe {
+            if !state.p_player.is_null() {
+                let f_mute = if mute { 1i32 } else { 0i32 };
+                let hr = com_call_1(state.p_player, 22, f_mute);
+                if hr >= 0 {
+                    log_player(if mute { "Audio muted." } else { "Audio unmuted." });
+                    return Ok(());
+                } else {
+                    return Err(format!("SetMute returned 0x{:08X}", hr as u32));
+                }
+            }
+        }
+    }
+    Err("No active player".to_string())
+}
+
+/// Gets audio mute state via IMFPMediaPlayer::GetMute (vtable index 21)
+pub fn get_muted() -> bool {
+    let guard = EMBEDDED_PLAYER.lock().unwrap();
+    if let Some(state) = guard.as_ref() {
+        unsafe {
+            if !state.p_player.is_null() {
+                let mut f_mute: i32 = 0;
+                let hr = com_call_1(state.p_player, 21, &mut f_mute as *mut i32);
+                if hr >= 0 {
+                    return f_mute != 0;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Sets playback speed/rate (0.5 to 2.0) via IMFPMediaPlayer::SetRate (vtable index 10)
+pub fn set_playback_rate(rate: f32) -> Result<(), String> {
+    let guard = EMBEDDED_PLAYER.lock().unwrap();
+    if let Some(state) = guard.as_ref() {
+        unsafe {
+            if !state.p_player.is_null() {
+                let hr = com_call_1(state.p_player, 10, rate);
+                if hr >= 0 {
+                    log_player(&format!("Playback rate set to {:.2}x", rate));
+                    return Ok(());
+                } else {
+                    return Err(format!("SetRate returned 0x{:08X}", hr as u32));
+                }
+            }
+        }
+    }
+    Err("No active player".to_string())
 }
 
 /// Seeks relative seconds (e.g. -15 or +30)

@@ -1,0 +1,236 @@
+import { Theme } from "../theme.slint";
+
+component NavIcon inherits Rectangle {
+    in property <int> icon_id: 0;
+    in property <color> icon_color: #ffffff;
+
+    width: 24px;
+    height: 24px;
+
+    // 0: Home
+    if root.icon_id == 0 : Path {
+        width: 22px;
+        height: 22px;
+        stroke: root.icon_color;
+        stroke-width: 1.8px;
+        commands: "M 3 10 L 11 3 L 19 10 L 19 19 L 13 19 L 13 13 L 9 13 L 9 19 L 3 19 Z";
+    }
+
+    // 1: Search
+    if root.icon_id == 1 : Path {
+        width: 22px;
+        height: 22px;
+        stroke: root.icon_color;
+        stroke-width: 1.8px;
+        commands: "M 9 3 A 6 6 0 1 1 3 9 A 6 6 0 0 1 9 3 Z M 13.5 13.5 L 19 19";
+    }
+
+    // 2: Library
+    if root.icon_id == 2 : Path {
+        width: 22px;
+        height: 22px;
+        stroke: root.icon_color;
+        stroke-width: 1.8px;
+        commands: "M 4 4 L 4 20 L 8 18 L 12 20 L 12 4 Z M 14 4 L 18 4 L 18 20 L 14 20 Z";
+    }
+
+    // 3: Settings
+    if root.icon_id == 3 : Path {
+        width: 22px;
+        height: 22px;
+        stroke: root.icon_color;
+        stroke-width: 2px;
+        commands: "M 3 7 L 19 7 M 7 4 L 7 10 M 3 15 L 19 15 M 15 12 L 15 18";
+    }
+
+    // 4: Fullscreen
+    if root.icon_id == 4 : Path {
+        width: 22px;
+        height: 22px;
+        stroke: root.icon_color;
+        stroke-width: 2px;
+        commands: "M 3 8 L 3 3 L 8 3 M 14 3 L 19 3 L 19 8 M 19 14 L 19 19 L 14 19 M 8 19 L 3 19 L 3 14";
+    }
+}
+
+component NavItem inherits Rectangle {
+    in property <int> icon_id: 0;
+    in property <string> label: "";
+    in property <bool> is_active: false;
+    in property <bool> is_expanded: false;
+    callback clicked();
+
+    height: 48px;
+    background: root.is_active ? Theme.surface-raised : (touch.has-hover ? Theme.surface-hover : #00000000);
+    border-radius: 6px;
+
+    // Active indicator on left
+    if root.is_active : Rectangle {
+        x: 0px;
+        y: 8px;
+        width: 3px;
+        height: 32px;
+        background: Theme.accent;
+        border-radius: 2px;
+    }
+
+    touch := TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 12px;
+        spacing: 16px;
+        alignment: start;
+
+        NavIcon {
+            icon_id: root.icon_id;
+            icon_color: root.is_active ? Theme.accent : (touch.has-hover ? #ffffff : Theme.text);
+            y: 12px;
+        }
+
+        if root.is_expanded : Text {
+            text: root.label;
+            font-size: 14px;
+            font-weight: root.is_active ? 700 : 500;
+            color: root.is_active ? #ffffff : (touch.has-hover ? #ffffff : Theme.text-muted);
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+export component Sidebar inherits Rectangle {
+    in-out property <int> active_index: 0; // 0=Home, 1=Search, 2=Library, 3=Settings
+    in-out property <bool> is_expanded: false;
+
+    callback nav_selected(int);
+    callback toggle_fullscreen();
+
+    width: root.is_expanded ? 190px : 56px;
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: Theme.surface-raised;
+    clip: true;
+
+    VerticalLayout {
+        padding-top: 8px;
+        padding-bottom: 8px;
+        padding-left: 4px;
+        padding-right: 4px;
+        spacing: 4px;
+
+        // Brand / Expand Header
+        Rectangle {
+            height: 48px;
+            background: #00000000;
+
+            header_touch := TouchArea {
+                width: 100%;
+                height: 100%;
+                clicked => {
+                    root.is_expanded = !root.is_expanded;
+                }
+            }
+
+            HorizontalLayout {
+                padding-left: 14px;
+                padding-right: 12px;
+                spacing: 14px;
+                alignment: start;
+
+                // Hamburger / Menu bars
+                Path {
+                    width: 22px;
+                    height: 22px;
+                    y: 13px;
+                    stroke: Theme.accent;
+                    stroke-width: 2px;
+                    commands: "M 3 5 L 19 5 M 3 11 L 19 11 M 3 17 L 19 17";
+                }
+
+                if root.is_expanded : Text {
+                    text: "STRAWBERRY";
+                    font-size: 14px;
+                    font-weight: 800;
+                    color: Theme.accent;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
+
+        // Separator
+        Rectangle {
+            height: 1px;
+            background: Theme.surface-raised;
+        }
+
+        // 1. Home / Discover
+        NavItem {
+            icon_id: 0;
+            label: "Home";
+            is_active: root.active_index == 0;
+            is_expanded: root.is_expanded;
+            clicked => {
+                root.nav_selected(0);
+            }
+        }
+
+        // 2. Search
+        NavItem {
+            icon_id: 1;
+            label: "Search";
+            is_active: root.active_index == 1;
+            is_expanded: root.is_expanded;
+            clicked => {
+                root.nav_selected(1);
+            }
+        }
+
+        // 3. Library / Watch History
+        NavItem {
+            icon_id: 2;
+            label: "Library";
+            is_active: root.active_index == 2;
+            is_expanded: root.is_expanded;
+            clicked => {
+                root.nav_selected(2);
+            }
+        }
+
+        // 4. Settings & Diagnostics
+        NavItem {
+            icon_id: 3;
+            label: "Settings";
+            is_active: root.active_index == 3;
+            is_expanded: root.is_expanded;
+            clicked => {
+                root.nav_selected(3);
+            }
+        }
+
+        // Flexible spacer pushing utility to bottom
+        Rectangle {}
+
+        // Separator
+        Rectangle {
+            height: 1px;
+            background: Theme.surface-raised;
+        }
+
+        // Bottom utility: Fullscreen Toggle
+        NavItem {
+            icon_id: 4;
+            label: "Fullscreen";
+            is_active: false;
+            is_expanded: root.is_expanded;
+            clicked => {
+                root.toggle_fullscreen();
+            }
+        }
+    }
+}

@@ -35,7 +35,7 @@ anyhow = "1.0"
 encoding_rs = "0.8"
 slint = { version = "1.18", default-features = false, features = ["compat-1-18", "std", "backend-winit", "renderer-software", "raw-window-handle-06"] }
 raw-window-handle = "0.6"
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 
 [build-dependencies]
 slint-build = { version = "1.18", default-features = false, features = ["compat-1-18"] }

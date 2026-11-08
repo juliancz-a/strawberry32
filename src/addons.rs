@@ -20,9 +20,22 @@ pub struct MetaItem {
     pub name: String,
     #[serde(rename = "type")]
     pub item_type: Option<String>,
+    #[serde(default, deserialize_with = "crate::state::deserialize_string_or_number")]
     pub year: Option<String>,
+    #[serde(default)]
     pub poster: Option<String>,
+    #[serde(default)]
+    pub background: Option<String>,
+    #[serde(default)]
     pub description: Option<String>,
+    #[serde(default, rename = "releaseInfo", deserialize_with = "crate::state::deserialize_string_or_number")]
+    pub release_info: Option<String>,
+    #[serde(default, rename = "imdbRating", deserialize_with = "crate::state::deserialize_string_or_number")]
+    pub imdb_rating: Option<String>,
+    #[serde(default, deserialize_with = "crate::state::deserialize_string_or_number")]
+    pub runtime: Option<String>,
+    #[serde(default)]
+    pub genres: Vec<String>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -55,6 +68,7 @@ pub struct CompatibleStream {
     pub container: String,
     pub audio_codec: String,
     pub is_mp4: bool,
+    pub is_pack: bool,
     pub score: i32,
     pub raw_title: String,
 }
@@ -126,34 +140,47 @@ pub fn get_torrentio_base_url() -> String {
     "https://torrentio.strem.fun".to_string()
 }
 
+/// Fetches a specific Cinemeta catalog (e.g. ("movie", "top", None) or ("series", "top", Some("genre=Action")))
+pub fn fetch_cinemeta_catalog(
+    catalog_type: &str,
+    catalog_id: &str,
+    extra: Option<&str>,
+) -> Result<Vec<MetaItem>, String> {
+    let agent = get_shared_agent();
+    let url = if let Some(ext) = extra {
+        format!(
+            "https://v3-cinemeta.strem.io/catalog/{}/{}/{}.json",
+            catalog_type, catalog_id, ext
+        )
+    } else {
+        format!(
+            "https://v3-cinemeta.strem.io/catalog/{}/{}.json",
+            catalog_type, catalog_id
+        )
+    };
+
+    log_net(&format!("Loading Cinemeta catalog: {}", url));
+    let resp = agent.get(&url).call().map_err(|e| format!("Cinemeta HTTP error: {}", e))?;
+    let parsed: CinemetaCatalogResponse = resp.into_json().map_err(|e| format!("Cinemeta JSON error: {}", e))?;
+    Ok(parsed.metas)
+}
+
 /// Loads initial Popular (Top) catalog from Cinemeta
 pub fn load_popular_catalog(filter_type: Option<&str>) -> Result<Vec<MetaItem>, String> {
-    let agent = match create_agent() {
-        Ok(a) => a,
-        Err(e) => return Err(e),
-    };
     let mut all = Vec::new();
 
     let fetch_movies = filter_type.is_none() || filter_type == Some("all") || filter_type == Some("movie");
     let fetch_series = filter_type.is_none() || filter_type == Some("all") || filter_type == Some("series");
 
     if fetch_movies {
-        let url = "https://v3-cinemeta.strem.io/catalog/movie/top.json";
-        log_net(&format!("Loading popular movies: {}", url));
-        if let Ok(resp) = agent.get(url).call() {
-            if let Ok(parsed) = resp.into_json::<CinemetaCatalogResponse>() {
-                all.extend(parsed.metas);
-            }
+        if let Ok(movies) = fetch_cinemeta_catalog("movie", "top", None) {
+            all.extend(movies);
         }
     }
 
     if fetch_series {
-        let url = "https://v3-cinemeta.strem.io/catalog/series/top.json";
-        log_net(&format!("Loading popular series: {}", url));
-        if let Ok(resp) = agent.get(url).call() {
-            if let Ok(parsed) = resp.into_json::<CinemetaCatalogResponse>() {
-                all.extend(parsed.metas);
-            }
+        if let Ok(series) = fetch_cinemeta_catalog("series", "top", None) {
+            all.extend(series);
         }
     }
 
@@ -161,7 +188,7 @@ pub fn load_popular_catalog(filter_type: Option<&str>) -> Result<Vec<MetaItem>, 
     Ok(all)
 }
 
-/// Searches Cinemeta for movies and series matching the query.
+/// Searches Cinemeta for movies and series matching the query with relevance scoring.
 pub fn search_cinemeta(query: &str, filter_type: Option<&str>) -> Result<Vec<MetaItem>, String> {
     let query_clean = query.trim();
     if query_clean.is_empty() {
@@ -169,50 +196,63 @@ pub fn search_cinemeta(query: &str, filter_type: Option<&str>) -> Result<Vec<Met
     }
 
     let encoded = percent_encode(query_clean);
-    let agent = match create_agent() {
-        Ok(a) => a,
-        Err(e) => {
-            log_err(&e);
-            return Err(e);
-        }
-    };
     let mut all_results = Vec::new();
 
     let search_movies = filter_type.is_none() || filter_type == Some("all") || filter_type == Some("movie");
     let search_series = filter_type.is_none() || filter_type == Some("all") || filter_type == Some("series");
 
+    let q_lower = query_clean.to_lowercase();
+    let q_words: Vec<&str> = q_lower.split_whitespace().collect();
+
     if search_movies {
-        let movie_url = format!(
-            "https://v3-cinemeta.strem.io/catalog/movie/top/search={}.json",
-            encoded
-        );
-        log_net(&format!("Querying Cinemeta Movies: {}", movie_url));
-        if let Ok(resp) = agent.get(&movie_url).call() {
-            if let Ok(parsed) = resp.into_json::<CinemetaCatalogResponse>() {
-                all_results.extend(parsed.metas);
-            }
+        let extra = format!("search={}", encoded);
+        if let Ok(movies) = fetch_cinemeta_catalog("movie", "top", Some(&extra)) {
+            all_results.extend(movies);
         }
     }
 
     if search_series {
-        let series_url = format!(
-            "https://v3-cinemeta.strem.io/catalog/series/top/search={}.json",
-            encoded
-        );
-        log_net(&format!("Querying Cinemeta Series: {}", series_url));
-        if let Ok(resp) = agent.get(&series_url).call() {
-            if let Ok(parsed) = resp.into_json::<CinemetaCatalogResponse>() {
-                all_results.extend(parsed.metas);
-            }
+        let extra = format!("search={}", encoded);
+        if let Ok(series) = fetch_cinemeta_catalog("series", "top", Some(&extra)) {
+            all_results.extend(series);
         }
     }
+
+    // Relevance scoring
+    all_results.sort_by_cached_key(|item| {
+        let title_lower = item.name.to_lowercase();
+        let mut score: i32 = 0;
+
+        if title_lower == q_lower {
+            score += 10000;
+        } else if title_lower.starts_with(&q_lower) {
+            score += 5000;
+        } else if title_lower.contains(&q_lower) {
+            score += 2000;
+        }
+
+        for word in &q_words {
+            if title_lower.contains(word) {
+                score += 500;
+            }
+        }
+
+        if let Some(r_str) = &item.imdb_rating {
+            if let Ok(r) = r_str.parse::<f32>() {
+                score += (r * 100.0) as i32;
+            }
+        }
+
+        // Descending order sort key
+        -score
+    });
 
     Ok(all_results)
 }
 
 /// Fetches full metadata details including series episode list from Cinemeta
 pub fn fetch_meta_detail(item_type: &str, id: &str) -> Result<MetaDetail, String> {
-    let agent = create_agent()?;
+    let agent = get_shared_agent();
     let url = format!("https://v3-cinemeta.strem.io/meta/{}/{}.json", item_type, id);
     log_net(&format!("Fetching metadata details: {}", url));
 
@@ -403,6 +443,16 @@ pub fn fetch_streams(
             }
         }
 
+        // Detect Torrent Pack (Season Pack / Complete Series / Disc Collection)
+        let is_pack = upper.contains("COMPLETE")
+            || upper.contains("SEASON")
+            || upper.contains("S01-")
+            || upper.contains("S01 -")
+            || upper.contains("S02-")
+            || upper.contains("S03-")
+            || upper.contains("PACK")
+            || upper.contains("COLLECTION");
+
         // SURFACE RT STREAM SCORING ALGORITHM:
         // Prioritize MP4 (DirectShow/MF native) and MKV H.264 with AAC audio (remuxable with native audio)
         let mut score: i32 = (seeders_num.min(500) as i32) * 2;
@@ -425,6 +475,11 @@ pub fn fetch_streams(
             score -= 300; // Demote non-native audio formats
         }
 
+        // Torrent pack adjustment: if it's a pack without specific episode file index, demote heavily
+        if is_pack && item.file_idx.is_none() {
+            score -= 5000;
+        }
+
         // COMPATIBILITY BADGE
         let badge = if is_mp4 {
             "[★ NATIVE MP4]"
@@ -440,10 +495,12 @@ pub fn fetch_streams(
             "[MKV H264]"
         };
 
-        let display_title = format!(
-            "{} [👤 {} | {} | {} | {} | {}] {}",
-            badge, seeders_num, quality_tag, container_tag, audio_tag, size, release_name
-        );
+        // Clean release name for display
+        let display_title = if !release_name.is_empty() {
+            release_name.to_string()
+        } else {
+            format!("{} {}", badge, quality_tag)
+        };
 
         compatible.push(CompatibleStream {
             display_title,
@@ -456,6 +513,7 @@ pub fn fetch_streams(
             container: format!("[{}]", container_tag),
             audio_codec: audio_tag.to_string(),
             is_mp4,
+            is_pack,
             score,
             raw_title,
         });
@@ -471,4 +529,106 @@ pub fn fetch_streams(
     ));
 
     Ok(compatible)
+}
+
+#[derive(Deserialize)]
+struct ManifestResponse {
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub version: Option<String>,
+    pub description: Option<String>,
+    #[serde(default)]
+    pub types: Vec<String>,
+    #[serde(default)]
+    pub catalogs: Vec<state::ManifestCatalog>,
+    #[serde(default)]
+    pub resources: Vec<serde_json::Value>,
+}
+
+/// Installs or updates an add-on from a manifest URL (supports stremio:// and auto-manifest.json appending)
+pub fn install_addon_from_url(input_url: &str) -> Result<state::AddonDescriptor, String> {
+    let mut url = input_url.trim().to_string();
+    if url.starts_with("stremio://") {
+        url = url.replacen("stremio://", "https://", 1);
+    }
+    if !url.ends_with("/manifest.json") {
+        if url.ends_with('/') {
+            url.push_str("manifest.json");
+        } else {
+            url.push_str("/manifest.json");
+        }
+    }
+
+    log_net(&format!("Fetching add-on manifest from: {}", url));
+    let agent = get_shared_agent();
+    let resp = agent.get(&url).call().map_err(|e| format!("Network error fetching manifest: {}", e))?;
+    let parsed: ManifestResponse = resp.into_json().map_err(|e| format!("Invalid manifest JSON: {}", e))?;
+
+    let id = parsed.id.ok_or_else(|| "Manifest missing 'id' field".to_string())?;
+    let name = parsed.name.unwrap_or_else(|| id.clone());
+    let version = parsed.version.unwrap_or_else(|| "1.0.0".to_string());
+
+    let descriptor = state::AddonDescriptor {
+        transport_url: url,
+        manifest: state::Manifest {
+            id,
+            name,
+            version,
+            description: parsed.description,
+            types: parsed.types,
+            catalogs: parsed.catalogs,
+            resources: parsed.resources,
+        },
+        enabled: true,
+        priority: 10,
+    };
+
+    state::add_or_update_addon(descriptor.clone());
+    log_net(&format!("Add-on '{}' installed successfully.", descriptor.manifest.name));
+    Ok(descriptor)
+}
+
+/// Removes an installed add-on by ID
+pub fn remove_addon(id: &str) -> Result<(), String> {
+    let mut cfg = state::load_addons_config();
+    let initial_len = cfg.addons.len();
+    cfg.addons.retain(|a| a.manifest.id != id);
+    if cfg.addons.len() < initial_len {
+        state::save_addons_config(&cfg);
+        log_net(&format!("Add-on '{}' removed.", id));
+        Ok(())
+    } else {
+        Err(format!("Add-on '{}' not found", id))
+    }
+}
+
+/// Toggles enabled state of an installed add-on
+pub fn toggle_addon(id: &str) -> Result<bool, String> {
+    let mut cfg = state::load_addons_config();
+    if let Some(addon) = cfg.addons.iter_mut().find(|a| a.manifest.id == id) {
+        addon.enabled = !addon.enabled;
+        let new_state = addon.enabled;
+        state::save_addons_config(&cfg);
+        log_net(&format!("Add-on '{}' toggled to enabled={}.", id, new_state));
+        Ok(new_state)
+    } else {
+        Err(format!("Add-on '{}' not found", id))
+    }
+}
+
+/// Moves an add-on's priority up or down
+pub fn move_addon_priority(id: &str, move_up: bool) -> Result<(), String> {
+    let mut cfg = state::load_addons_config();
+    let idx = cfg.addons.iter().position(|a| a.manifest.id == id).ok_or_else(|| format!("Add-on '{}' not found", id))?;
+    if move_up && idx > 0 {
+        cfg.addons.swap(idx, idx - 1);
+        state::save_addons_config(&cfg);
+        Ok(())
+    } else if !move_up && idx + 1 < cfg.addons.len() {
+        cfg.addons.swap(idx, idx + 1);
+        state::save_addons_config(&cfg);
+        Ok(())
+    } else {
+        Ok(())
+    }
 }

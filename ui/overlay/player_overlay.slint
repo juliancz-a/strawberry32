@@ -2,14 +2,15 @@ import { Theme } from "../theme.slint";
 
 component OverlayButton inherits Rectangle {
     in property <string> text: "";
+    in property <bool> is_active: false;
     callback clicked();
 
     height: 34px;
     min-width: 44px;
     border-radius: 6px;
-    background: touch.pressed ? Theme.accent : (touch.has-hover ? #2a2b2e : #1c1d20);
+    background: root.is_active ? Theme.accent : (touch.pressed ? Theme.accent : (touch.has-hover ? #2a2b2e : #1c1d20));
     border-width: 1px;
-    border-color: touch.has-hover ? #505258 : #333438;
+    border-color: root.is_active ? Theme.accent : (touch.has-hover ? #505258 : #333438);
 
     touch := TouchArea {
         width: 100%;
@@ -18,14 +19,14 @@ component OverlayButton inherits Rectangle {
     }
 
     HorizontalLayout {
-        padding-left: 12px;
-        padding-right: 12px;
+        padding-left: 10px;
+        padding-right: 10px;
         alignment: center;
 
         Text {
             text: root.text;
-            color: touch.pressed ? #ffffff : (touch.has-hover ? #ffffff : #e0e0e0);
-            font-size: 13px;
+            color: root.is_active ? #ffffff : (touch.pressed ? #ffffff : (touch.has-hover ? #ffffff : #e0e0e0));
+            font-size: 12px;
             font-weight: 700;
             vertical-alignment: center;
             horizontal-alignment: center;
@@ -45,12 +46,36 @@ export component PlayerOverlay inherits Window {
     in-out property <string> subtitle_text: "";
     in-out property <float> progress: 0.0; // 0.0 to 1.0
 
+    // Side Panels (0=None, 1=Subtitles, 2=Info, 3=Volume)
+    in-out property <int> active_panel: 0;
+
+    // Subtitle Controls
+    in-out property <int> sub_delay_ms: 0;
+    in-out property <int> sub_size: 1; // 0=Small, 1=Medium, 2=Large
+
+    // Stream & Hardware Info
+    in-out property <string> stream_info_text: "720p H.264 • AAC Stereo • Hardware Accelerated";
+    in-out property <string> torrent_stats_text: "Swarm: 24 peers • ↓ 2.4 MB/s • Buffer: 100%";
+
+    // Volume Controls
+    in-out property <int> volume_percent: 100;
+    in-out property <bool> is_muted: false;
+
+    // Series Episode Navigation
+    in-out property <bool> has_next_episode: false;
+    in-out property <string> next_episode_label: "Next Episode";
+
     callback play_pause_clicked();
     callback seek_relative(int);
     callback seek_percent(float);
     callback close_clicked();
     callback toggle_fullscreen_clicked();
-    callback cycle_subtitles();
+    callback toggle_panel(int);
+    callback sub_delay_adjust(int);
+    callback sub_size_changed(int);
+    callback volume_adjust(int);
+    callback toggle_mute_clicked();
+    callback next_episode_clicked();
     callback user_activity();
 
     // Top control bar (solid opaque #101011, height 50px)
@@ -102,6 +127,15 @@ export component PlayerOverlay inherits Window {
                 alignment: center;
 
                 OverlayButton {
+                    text: root.active_panel == 2 ? "✕ Info" : "ℹ️ Info";
+                    is_active: root.active_panel == 2;
+                    clicked => {
+                        root.user_activity();
+                        root.toggle_panel(root.active_panel == 2 ? 0 : 2);
+                    }
+                }
+
+                OverlayButton {
                     text: root.is_fullscreen ? "Restore" : "Fullscreen";
                     clicked => {
                         root.user_activity();
@@ -112,30 +146,262 @@ export component PlayerOverlay inherits Window {
         }
     }
 
-    // Subtitle rendering box (opaque background so text is crisp and clean)
-    if root.subtitle_text != "" : Rectangle {
-        x: (parent.width - self.width) / 2;
-        y: parent.height - (root.controls_visible ? 136px : 68px);
-        width: sub_label.width + 24px;
-        height: sub_label.height + 12px;
-        background: #000000e0;
-        border-radius: 4px;
+    // Side Panel (Solid Opaque #101011, 320px wide on right side)
+    if controls_visible && root.active_panel > 0 : Rectangle {
+        x: parent.width - 320px;
+        y: 50px;
+        width: 320px;
+        height: parent.height - 50px - (root.subtitle_text != "" ? 106px : 74px);
+        background: #151618;
+        border-width: 1px;
+        border-color: #2a2b2e;
 
-        sub_label := Text {
-            text: root.subtitle_text;
-            color: #FFFF55;
-            font-size: 18px;
-            font-weight: 700;
-            horizontal-alignment: center;
+        panel_touch := TouchArea {
+            width: 100%;
+            height: 100%;
+            pointer-event(event) => {
+                root.user_activity();
+            }
+        }
+
+        VerticalLayout {
+            padding: 14px;
+            spacing: 12px;
+
+            // Panel Header
+            HorizontalLayout {
+                alignment: space-between;
+                Text {
+                    text: root.active_panel == 1 ? "💬 Subtitles" : (root.active_panel == 2 ? "ℹ️ Playback Info" : "🔊 Volume Control");
+                    font-size: 15px;
+                    font-weight: 800;
+                    color: Theme.text;
+                    vertical-alignment: center;
+                }
+                OverlayButton {
+                    text: "✕";
+                    clicked => {
+                        root.user_activity();
+                        root.toggle_panel(0);
+                    }
+                }
+            }
+
+            Rectangle { height: 1px; background: #2a2b2e; }
+
+            // PANEL 1: SUBTITLES
+            if root.active_panel == 1 : VerticalLayout {
+                spacing: 12px;
+
+                Text {
+                    text: "Subtitle Sync Delay:";
+                    font-size: 12px;
+                    font-weight: 700;
+                    color: Theme.accent;
+                }
+
+                HorizontalLayout {
+                    spacing: 6px;
+                    alignment: start;
+
+                    OverlayButton {
+                        text: "-100ms";
+                        clicked => { root.user_activity(); root.sub_delay_adjust(-100); }
+                    }
+                    OverlayButton {
+                        text: "-50ms";
+                        clicked => { root.user_activity(); root.sub_delay_adjust(-50); }
+                    }
+                    Rectangle {
+                        width: 70px;
+                        height: 34px;
+                        background: #1c1d20;
+                        border-radius: 6px;
+                        Text {
+                            text: root.sub_delay_ms + " ms";
+                            font-size: 12px;
+                            font-weight: 700;
+                            color: Theme.text;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                    OverlayButton {
+                        text: "+50ms";
+                        clicked => { root.user_activity(); root.sub_delay_adjust(50); }
+                    }
+                    OverlayButton {
+                        text: "+100ms";
+                        clicked => { root.user_activity(); root.sub_delay_adjust(100); }
+                    }
+                }
+
+                Text {
+                    text: "Subtitle Text Size:";
+                    font-size: 12px;
+                    font-weight: 700;
+                    color: Theme.accent;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+
+                    OverlayButton {
+                        text: "Small (15px)";
+                        is_active: root.sub_size == 0;
+                        clicked => { root.user_activity(); root.sub_size_changed(0); }
+                    }
+                    OverlayButton {
+                        text: "Medium (18px)";
+                        is_active: root.sub_size == 1;
+                        clicked => { root.user_activity(); root.sub_size_changed(1); }
+                    }
+                    OverlayButton {
+                        text: "Large (22px)";
+                        is_active: root.sub_size == 2;
+                        clicked => { root.user_activity(); root.sub_size_changed(2); }
+                    }
+                }
+            }
+
+            // PANEL 2: STREAM & HARDWARE INFO
+            if root.active_panel == 2 : VerticalLayout {
+                spacing: 10px;
+
+                Text {
+                    text: "Hardware Video Decoder:";
+                    font-size: 12px;
+                    font-weight: 700;
+                    color: Theme.accent;
+                }
+                Text {
+                    text: "⚡ Tegra 3 Hardware H.264 (DXVA2 Active)";
+                    font-size: 12px;
+                    color: Theme.ok;
+                }
+
+                Text {
+                    text: "Media Stream Properties:";
+                    font-size: 12px;
+                    font-weight: 700;
+                    color: Theme.accent;
+                }
+                Text {
+                    text: root.stream_info_text;
+                    font-size: 12px;
+                    color: Theme.text;
+                    wrap: word-wrap;
+                }
+
+                Text {
+                    text: "Torrent Swarm Telemetry:";
+                    font-size: 12px;
+                    font-weight: 700;
+                    color: Theme.accent;
+                }
+                Text {
+                    text: root.torrent_stats_text;
+                    font-size: 12px;
+                    color: Theme.text-muted;
+                    wrap: word-wrap;
+                }
+            }
+
+            // PANEL 3: VOLUME
+            if root.active_panel == 3 : VerticalLayout {
+                spacing: 12px;
+
+                Text {
+                    text: "Volume: " + root.volume_percent + "%" + (root.is_muted ? " (MUTED)" : "");
+                    font-size: 13px;
+                    font-weight: 700;
+                    color: Theme.text;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+
+                    OverlayButton {
+                        text: root.is_muted ? "Unmute 🔊" : "Mute 🔇";
+                        is_active: root.is_muted;
+                        clicked => { root.user_activity(); root.toggle_mute_clicked(); }
+                    }
+
+                    OverlayButton {
+                        text: "-10%";
+                        clicked => { root.user_activity(); root.volume_adjust(-10); }
+                    }
+
+                    OverlayButton {
+                        text: "+10%";
+                        clicked => { root.user_activity(); root.volume_adjust(10); }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+
+                    OverlayButton {
+                        text: "50%";
+                        clicked => { root.user_activity(); root.volume_adjust(50 - root.volume_percent); }
+                    }
+                    OverlayButton {
+                        text: "80%";
+                        clicked => { root.user_activity(); root.volume_adjust(80 - root.volume_percent); }
+                    }
+                    OverlayButton {
+                        text: "100%";
+                        clicked => { root.user_activity(); root.volume_adjust(100 - root.volume_percent); }
+                    }
+                }
+            }
+
+            Rectangle {}
         }
     }
 
-    // Bottom transport bar (solid opaque #101011, height 74px)
+    // Subtitle-only banner when controls are hidden (solid full-width #101011, height 52px)
+    if !controls_visible && root.subtitle_text != "" : Rectangle {
+        x: 0px;
+        y: parent.height - 52px;
+        width: 100%;
+        height: 52px;
+        background: #101011;
+
+        sub_touch := TouchArea {
+            width: 100%;
+            height: 100%;
+            clicked => {
+                root.user_activity();
+            }
+        }
+
+        HorizontalLayout {
+            alignment: center;
+            padding-left: 24px;
+            padding-right: 24px;
+
+            Text {
+                text: root.subtitle_text;
+                color: #FFFF55;
+                font-size: root.sub_size == 0 ? 15px : (root.sub_size == 1 ? 18px : 22px);
+                font-weight: 700;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+    }
+
+    // Bottom transport bar (solid opaque #101011, height 106px with subtitles, 74px without)
     if controls_visible : Rectangle {
         x: 0px;
-        y: parent.height - 74px;
+        y: parent.height - (root.subtitle_text != "" ? 106px : 74px);
         width: 100%;
-        height: 74px;
+        height: root.subtitle_text != "" ? 106px : 74px;
         background: #101011;
 
         bottom_touch := TouchArea {
@@ -153,13 +419,27 @@ export component PlayerOverlay inherits Window {
             padding-bottom: 6px;
             spacing: 6px;
 
+            if root.subtitle_text != "" : HorizontalLayout {
+                alignment: center;
+                height: 24px;
+                Text {
+                    text: root.subtitle_text;
+                    color: #FFFF55;
+                    font-size: root.sub_size == 0 ? 14px : (root.sub_size == 1 ? 16px : 19px);
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+
             // Interactive seek bar with hover & playhead indicator
             seek_bar := Rectangle {
                 height: 14px;
                 background: #252627;
                 border-radius: 4px;
 
-                // Buffered/Played progress fill
+                // Played progress fill
                 Rectangle {
                     x: 0px;
                     y: 3px;
@@ -198,7 +478,7 @@ export component PlayerOverlay inherits Window {
 
             // Transport buttons row (all 44px+ touch targets, custom dark buttons)
             HorizontalLayout {
-                spacing: 10px;
+                spacing: 8px;
                 alignment: center;
 
                 OverlayButton {
@@ -226,6 +506,14 @@ export component PlayerOverlay inherits Window {
                     }
                 }
 
+                if root.has_next_episode : OverlayButton {
+                    text: "⏭ " + root.next_episode_label;
+                    clicked => {
+                        root.user_activity();
+                        root.next_episode_clicked();
+                    }
+                }
+
                 Text {
                     text: root.time_str;
                     color: Theme.text;
@@ -235,10 +523,20 @@ export component PlayerOverlay inherits Window {
                 }
 
                 OverlayButton {
-                    text: "Subtitles";
+                    text: root.active_panel == 1 ? "✕ Subs" : "💬 Subs";
+                    is_active: root.active_panel == 1;
                     clicked => {
                         root.user_activity();
-                        root.cycle_subtitles();
+                        root.toggle_panel(root.active_panel == 1 ? 0 : 1);
+                    }
+                }
+
+                OverlayButton {
+                    text: root.is_muted ? "🔇" : ("🔊 " + root.volume_percent + "%");
+                    is_active: root.active_panel == 3;
+                    clicked => {
+                        root.user_activity();
+                        root.toggle_panel(root.active_panel == 3 ? 0 : 3);
                     }
                 }
 

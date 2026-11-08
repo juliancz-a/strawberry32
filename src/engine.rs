@@ -64,6 +64,8 @@ enum EngineCommand {
     StartStream {
         info_hash: String,
         file_idx: Option<usize>,
+        season: Option<u32>,
+        episode: Option<u32>,
         trackers: Vec<String>,
         resp: Sender<Result<String, String>>,
     },
@@ -153,8 +155,8 @@ pub fn start_engine() -> Result<(), String> {
                 // Command loop from UI
                 while let Ok(cmd) = cmd_rx.recv() {
                     match cmd {
-                        EngineCommand::StartStream { info_hash, file_idx, trackers, resp } => {
-                            let result = handle_start_stream(&session, &info_hash, file_idx, trackers).await;
+                        EngineCommand::StartStream { info_hash, file_idx, season, episode, trackers, resp } => {
+                            let result = handle_start_stream(&session, &info_hash, file_idx, season, episode, trackers).await;
                             let _ = resp.send(result);
                         }
                         EngineCommand::ClearCache { resp } => {
@@ -176,6 +178,8 @@ async fn handle_start_stream(
     session: &std::sync::Arc<Session>,
     info_hash: &str,
     preferred_file_idx: Option<usize>,
+    season: Option<u32>,
+    episode: Option<u32>,
     trackers: Vec<String>,
 ) -> Result<String, String> {
     log_torrent(&format!("Preparing stream for infoHash: {}", info_hash));
@@ -217,12 +221,15 @@ async fn handle_start_stream(
         magnet.push_str(&encoded_tr);
     }
 
-    let add_opts = AddTorrentOptions {
+    let mut add_opts = AddTorrentOptions {
         overwrite: true,
         force_tracker_interval: Some(Duration::from_secs(5)),
         trackers: Some(all_trackers.clone()),
         ..Default::default()
     };
+    if let Some(idx) = preferred_file_idx {
+        add_opts.only_files = Some(vec![idx]);
+    }
 
     let add_res = match session.add_torrent(AddTorrent::from_url(&magnet), Some(add_opts)).await {
         Ok(r) => r,
@@ -346,6 +353,25 @@ async fn handle_start_stream(
         }
         None => {
             let best = handle.with_metadata(|meta| {
+                // If this is a series episode, try to match episode token in filenames first
+                if let (Some(s), Some(e)) = (season, episode) {
+                    let pat1 = format!("s{:02}e{:02}", s, e);
+                    let pat2 = format!("s{}e{}", s, e);
+                    let pat3 = format!("{}x{:02}", s, e);
+                    let pat4 = format!("{}x{}", s, e);
+
+                    if let Ok(details) = meta.info.iter_file_details() {
+                        for (i, fd) in details.enumerate() {
+                            let fname = fd.filename.to_string().unwrap_or_default();
+                            let lower = fname.to_lowercase();
+                            if lower.contains(&pat1) || lower.contains(&pat2) || lower.contains(&pat3) || lower.contains(&pat4) {
+                                log_torrent(&format!("Matched series episode S{:02}E{:02} to file index {} ('{}')", s, e, i, fname));
+                                return (i, fd.len, fname);
+                            }
+                        }
+                    }
+                }
+
                 let mut max_len = 0u64;
                 let mut best_idx = 0usize;
                 let mut best_name = String::new();
@@ -391,6 +417,15 @@ async fn handle_start_stream(
             }
         }
     };
+
+    // Restrict librqbit download exclusively to the target file to avoid downloading the entire pack
+    let mut only_files_set = std::collections::HashSet::new();
+    only_files_set.insert(chosen_idx);
+    if let Err(e) = session.update_only_files(&handle, &only_files_set).await {
+        log_err(&format!("Notice: update_only_files failed: {}", e));
+    } else {
+        log_torrent(&format!("Torrent pack isolation active: downloading exclusively file index {}.", chosen_idx));
+    }
 
     // Register file info with the local proxy/remuxer server
     remux_proxy::register_file_info(torrent_id, chosen_idx, &file_name, file_len);
@@ -523,6 +558,8 @@ fn handle_clear_cache(cache_dir: &PathBuf) -> Result<usize, String> {
 pub fn start_stream(
     info_hash: String,
     file_idx: Option<usize>,
+    season: Option<u32>,
+    episode: Option<u32>,
     trackers: Vec<String>,
 ) -> Result<String, String> {
     let tx = match ENGINE_TX.get() {
@@ -534,6 +571,8 @@ pub fn start_stream(
     tx.send(EngineCommand::StartStream {
         info_hash,
         file_idx,
+        season,
+        episode,
         trackers,
         resp: resp_tx,
     })
@@ -548,9 +587,11 @@ pub fn start_stream(
 pub fn start_stream_sync(
     info_hash: String,
     file_idx: Option<usize>,
+    season: Option<u32>,
+    episode: Option<u32>,
     trackers: Vec<String>,
 ) -> Result<String, String> {
-    start_stream(info_hash, file_idx, trackers)
+    start_stream(info_hash, file_idx, season, episode, trackers)
 }
 
 /// Clears cached chunk files

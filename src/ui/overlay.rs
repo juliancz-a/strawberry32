@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::Graphics::Gdi::{
-    CombineRgn, CreateRectRgn, DeleteObject, SetWindowRgn, HGDIOBJ, RGN_OR,
+    CombineRgn, CreateRectRgn, DeleteObject, InvalidateRect, SetWindowRgn, UpdateWindow, HGDIOBJ, RGN_OR,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetWindowLongW, SetParent, SetWindowLongW, SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE,
@@ -24,6 +24,7 @@ static OVERLAY_WIDTH: AtomicI32 = AtomicI32::new(0);
 static OVERLAY_HEIGHT: AtomicI32 = AtomicI32::new(0);
 static CONTROLS_VISIBLE: AtomicBool = AtomicBool::new(true);
 static HAS_SUBTITLE: AtomicBool = AtomicBool::new(false);
+static ACTIVE_PANEL: AtomicI32 = AtomicI32::new(0);
 static LAST_ACTIVITY: Mutex<Option<Instant>> = Mutex::new(None);
 
 thread_local! {
@@ -40,10 +41,11 @@ fn get_component_hwnd(window: &slint::Window) -> HWND {
 }
 
 /// Updates the visible window region using SetWindowRgn instead of LWA_COLORKEY.
-/// Only the top bar, bottom bar, and subtitle box exist as pixels;
-/// the video area between them is completely excluded from the window, allowing
-/// video to show through without color-keying or DWM transparency bugs.
-pub fn update_overlay_region(hwnd: HWND, width: i32, height: i32, controls_visible: bool, has_subtitle: bool) {
+/// When controls are visible, only the top bar and bottom transport bar exist as pixels.
+/// When controls are hidden and a subtitle is present, only a full-width bottom subtitle bar exists.
+/// The video area between them is completely excluded from the window, allowing
+/// video to show through without color-keying, transparency bugs, or dirty framebuffer artifacts.
+pub fn update_overlay_region(hwnd: HWND, width: i32, height: i32, controls_visible: bool, has_subtitle: bool, active_panel: i32) {
     if hwnd.is_null() || width <= 0 || height <= 0 {
         return;
     }
@@ -57,23 +59,28 @@ pub fn update_overlay_region(hwnd: HWND, width: i32, height: i32, controls_visib
             CombineRgn(combined_rgn, combined_rgn, top_rgn, RGN_OR);
             DeleteObject(top_rgn as HGDIOBJ);
 
-            // Bottom transport bar rect: 0..width, (height - 74)..height
-            let bottom_y = (height - 74).max(0);
+            // Bottom transport bar rect: 0..width, (height - bot_h)..height
+            // If subtitles are active, bottom bar expands to 106px to cleanly house the subtitle
+            let bot_h = if has_subtitle { 106 } else { 74 };
+            let bottom_y = (height - bot_h).max(0);
             let bottom_rgn = CreateRectRgn(0, bottom_y, width, height);
             CombineRgn(combined_rgn, combined_rgn, bottom_rgn, RGN_OR);
             DeleteObject(bottom_rgn as HGDIOBJ);
-        }
 
-        if has_subtitle {
-            let sub_x1 = (width / 2 - 320).max(0);
-            let sub_x2 = (width / 2 + 320).min(width);
-            let (sub_y1, sub_y2) = if controls_visible {
-                ((height - 136).max(0), (height - 80).max(0))
-            } else {
-                ((height - 68).max(0), (height - 12).max(0))
-            };
-
-            let sub_rgn = CreateRectRgn(sub_x1, sub_y1, sub_x2, sub_y2);
+            // Side panel rect if open (width - 320 .. width, 50 .. height - bot_h)
+            if active_panel > 0 {
+                let panel_w = 320.min(width);
+                let panel_x = width - panel_w;
+                let panel_y = 50;
+                let panel_h = (height - bot_h - 50).max(100);
+                let panel_rgn = CreateRectRgn(panel_x, panel_y, width, panel_y + panel_h);
+                CombineRgn(combined_rgn, combined_rgn, panel_rgn, RGN_OR);
+                DeleteObject(panel_rgn as HGDIOBJ);
+            }
+        } else if has_subtitle {
+            // Full-width subtitle banner at bottom: 0..width, (height - 52)..height
+            let sub_y = (height - 52).max(0);
+            let sub_rgn = CreateRectRgn(0, sub_y, width, height);
             CombineRgn(combined_rgn, combined_rgn, sub_rgn, RGN_OR);
             DeleteObject(sub_rgn as HGDIOBJ);
         }
@@ -83,6 +90,9 @@ pub fn update_overlay_region(hwnd: HWND, width: i32, height: i32, controls_visib
         if res == 0 {
             DeleteObject(combined_rgn as HGDIOBJ);
             log_err("SetWindowRgn failed for PlayerOverlay");
+        } else {
+            InvalidateRect(hwnd, std::ptr::null(), 1);
+            UpdateWindow(hwnd);
         }
     }
 }
@@ -119,7 +129,7 @@ pub fn setup_overlay_window(hwnd: HWND, main_hwnd: HWND, width: i32, height: i32
         }
 
         // 5. Apply initial window region and position
-        update_overlay_region(hwnd, width, height, true, false);
+        update_overlay_region(hwnd, width, height, true, false, 0);
         SetWindowPos(
             hwnd,
             HWND_TOP,
@@ -140,55 +150,61 @@ pub fn ensure_overlay(
     width: i32,
     height: i32,
 ) -> Result<PlayerOverlay, String> {
+    let existing = OVERLAY_INSTANCE.with(|cell| {
+        cell.try_borrow().ok().and_then(|g| g.as_ref().map(|o| o.clone_strong()))
+    });
+
+    if let Some(existing) = existing {
+        position_overlay(main_hwnd, x, y, width, height);
+        show_overlay();
+        notify_user_activity();
+        return Ok(existing);
+    }
+
+    let overlay = PlayerOverlay::new()
+        .map_err(|e| format!("Failed to create PlayerOverlay: {}", e))?;
+
+    // 1. Show FIRST so winit creates and maps the native HWND
+    overlay.show().map_err(|e| format!("Failed to show PlayerOverlay: {}", e))?;
+
     OVERLAY_INSTANCE.with(|cell| {
-        let mut guard = cell.borrow_mut();
-        if let Some(existing) = guard.as_ref() {
-            position_overlay(main_hwnd, x, y, width, height);
-            show_overlay();
-            notify_user_activity();
-            return Ok(existing.clone_strong());
+        if let Ok(mut g) = cell.try_borrow_mut() {
+            *g = Some(overlay.clone_strong());
         }
+    });
 
-        let overlay = PlayerOverlay::new()
-            .map_err(|e| format!("Failed to create PlayerOverlay: {}", e))?;
-
-        // 1. Show FIRST so winit creates and maps the native HWND
-        overlay.show().map_err(|e| format!("Failed to show PlayerOverlay: {}", e))?;
-
-        // 2. Resolve HWND immediately
-        let hwnd = get_component_hwnd(overlay.window());
-        if !hwnd.is_null() {
-            setup_overlay_window(hwnd, main_hwnd, width, height);
-            OVERLAY_HWND.store(hwnd as isize, Ordering::SeqCst);
-            position_overlay(main_hwnd, x, y, width, height);
-            notify_user_activity();
-            log_info(&format!(
-                "PlayerOverlay HWND resolved immediately (0x{:X}) and configured as WS_CHILD",
-                hwnd as usize
-            ));
-        } else {
-            // Retry on the next tick if winit hasn't attached the HWND synchronously
-            log_info("PlayerOverlay HWND was null after show(); scheduling tick retry...");
-            let overlay_weak = overlay.as_weak();
-            slint::Timer::single_shot(Duration::from_millis(20), move || {
-                if let Some(ov) = overlay_weak.upgrade() {
-                    let h = get_component_hwnd(ov.window());
-                    if !h.is_null() {
-                        setup_overlay_window(h, main_hwnd, width, height);
-                        OVERLAY_HWND.store(h as isize, Ordering::SeqCst);
-                        position_overlay(main_hwnd, x, y, width, height);
-                        notify_user_activity();
-                        log_info(&format!("PlayerOverlay HWND resolved on retry tick: 0x{:X}", h as usize));
-                    } else {
-                        log_err("PlayerOverlay HWND still null on retry tick!");
-                    }
+    // 2. Resolve HWND immediately
+    let hwnd = get_component_hwnd(overlay.window());
+    if !hwnd.is_null() {
+        setup_overlay_window(hwnd, main_hwnd, width, height);
+        OVERLAY_HWND.store(hwnd as isize, Ordering::SeqCst);
+        position_overlay(main_hwnd, x, y, width, height);
+        notify_user_activity();
+        log_info(&format!(
+            "PlayerOverlay HWND resolved immediately (0x{:X}) and configured as WS_CHILD",
+            hwnd as usize
+        ));
+    } else {
+        // Retry on the next tick if winit hasn't attached the HWND synchronously
+        log_info("PlayerOverlay HWND was null after show(); scheduling tick retry...");
+        let overlay_weak = overlay.as_weak();
+        slint::Timer::single_shot(Duration::from_millis(20), move || {
+            if let Some(ov) = overlay_weak.upgrade() {
+                let h = get_component_hwnd(ov.window());
+                if !h.is_null() {
+                    setup_overlay_window(h, main_hwnd, width, height);
+                    OVERLAY_HWND.store(h as isize, Ordering::SeqCst);
+                    position_overlay(main_hwnd, x, y, width, height);
+                    notify_user_activity();
+                    log_info(&format!("PlayerOverlay HWND resolved on retry tick: 0x{:X}", h as usize));
+                } else {
+                    log_err("PlayerOverlay HWND still null on retry tick!");
                 }
-            });
-        }
+            }
+        });
+    }
 
-        *guard = Some(overlay.clone_strong());
-        Ok(overlay)
-    })
+    Ok(overlay)
 }
 
 /// Repositions the overlay window via Win32 SetWindowPos using client coordinates
@@ -215,7 +231,8 @@ pub fn position_overlay(_main_hwnd: HWND, x_client: i32, y_client: i32, width: i
 
         let vis = CONTROLS_VISIBLE.load(Ordering::SeqCst);
         let sub = HAS_SUBTITLE.load(Ordering::SeqCst);
-        update_overlay_region(hwnd, width, height, vis, sub);
+        let panel = ACTIVE_PANEL.load(Ordering::SeqCst);
+        update_overlay_region(hwnd, width, height, vis, sub, panel);
     }
 }
 
@@ -228,20 +245,50 @@ pub fn update_overlay_state(time_str: &str, progress: f32, is_paused: bool, sub_
         let w = OVERLAY_WIDTH.load(Ordering::SeqCst);
         let h = OVERLAY_HEIGHT.load(Ordering::SeqCst);
         let vis = CONTROLS_VISIBLE.load(Ordering::SeqCst);
+        let panel = ACTIVE_PANEL.load(Ordering::SeqCst);
         if !hwnd.is_null() && w > 0 && h > 0 {
-            update_overlay_region(hwnd, w, h, vis, has_sub);
+            update_overlay_region(hwnd, w, h, vis, has_sub, panel);
         }
     }
 
     OVERLAY_INSTANCE.with(|cell| {
-        if let Some(overlay) = cell.borrow().as_ref() {
-            overlay.set_time_str(time_str.into());
-            overlay.set_progress(progress);
-            overlay.set_is_paused(is_paused);
-            overlay.set_subtitle_text(sub_text.into());
-            overlay.set_is_fullscreen(is_fs);
+        if let Ok(guard) = cell.try_borrow() {
+            if let Some(overlay) = guard.as_ref() {
+                overlay.set_time_str(time_str.into());
+                overlay.set_progress(progress);
+                overlay.set_is_paused(is_paused);
+                overlay.set_subtitle_text(sub_text.into());
+                overlay.set_is_fullscreen(is_fs);
+            }
         }
     });
+}
+
+/// Sets active panel on the overlay (0=None, 1=Subtitles, 2=Info, 3=Volume)
+pub fn set_active_panel(panel: i32) {
+    ACTIVE_PANEL.store(panel, Ordering::SeqCst);
+    let hwnd = OVERLAY_HWND.load(Ordering::SeqCst) as HWND;
+    let w = OVERLAY_WIDTH.load(Ordering::SeqCst);
+    let h = OVERLAY_HEIGHT.load(Ordering::SeqCst);
+    let vis = CONTROLS_VISIBLE.load(Ordering::SeqCst);
+    let sub = HAS_SUBTITLE.load(Ordering::SeqCst);
+
+    if !hwnd.is_null() && w > 0 && h > 0 {
+        update_overlay_region(hwnd, w, h, vis, sub, panel);
+    }
+
+    OVERLAY_INSTANCE.with(|cell| {
+        if let Ok(guard) = cell.try_borrow() {
+            if let Some(overlay) = guard.as_ref() {
+                overlay.set_active_panel(panel);
+            }
+        }
+    });
+}
+
+/// Returns current active panel (0=None, 1=Subtitles, 2=Info, 3=Volume)
+pub fn get_active_panel() -> i32 {
+    ACTIVE_PANEL.load(Ordering::SeqCst)
 }
 
 /// Toggles controls visibility on the overlay
@@ -260,14 +307,17 @@ pub fn set_controls_visible(visible: bool) {
     let w = OVERLAY_WIDTH.load(Ordering::SeqCst);
     let h = OVERLAY_HEIGHT.load(Ordering::SeqCst);
     let sub = HAS_SUBTITLE.load(Ordering::SeqCst);
+    let panel = ACTIVE_PANEL.load(Ordering::SeqCst);
 
     if !hwnd.is_null() && w > 0 && h > 0 {
-        update_overlay_region(hwnd, w, h, visible, sub);
+        update_overlay_region(hwnd, w, h, visible, sub, panel);
     }
 
     OVERLAY_INSTANCE.with(|cell| {
-        if let Some(overlay) = cell.borrow().as_ref() {
-            overlay.set_controls_visible(visible);
+        if let Ok(guard) = cell.try_borrow() {
+            if let Some(overlay) = guard.as_ref() {
+                overlay.set_controls_visible(visible);
+            }
         }
     });
 }

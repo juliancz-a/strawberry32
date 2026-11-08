@@ -25,6 +25,7 @@ struct RawSubItem {
 
 static ACTIVE_SUBTITLES: Mutex<Option<Vec<SubtitleEntry>>> = Mutex::new(None);
 static ACTIVE_SUB_LANG: Mutex<String> = Mutex::new(String::new());
+static SUBTITLE_DELAY_MS: Mutex<i64> = Mutex::new(0);
 
 pub fn set_active_subtitles(entries: Vec<SubtitleEntry>, lang: &str) {
     let mut guard = ACTIVE_SUBTITLES.lock().unwrap();
@@ -38,17 +39,46 @@ pub fn clear_active_subtitles() {
     *guard = None;
     let mut lang_guard = ACTIVE_SUB_LANG.lock().unwrap();
     lang_guard.clear();
+    let mut delay_guard = SUBTITLE_DELAY_MS.lock().unwrap();
+    *delay_guard = 0;
 }
 
 pub fn get_active_sub_lang() -> String {
     ACTIVE_SUB_LANG.lock().unwrap().clone()
 }
 
+pub fn set_subtitle_delay_ms(delay: i64) {
+    let mut guard = SUBTITLE_DELAY_MS.lock().unwrap();
+    *guard = delay;
+}
+
+pub fn get_subtitle_delay_ms() -> i64 {
+    *SUBTITLE_DELAY_MS.lock().unwrap()
+}
+
+pub fn adjust_subtitle_delay_ms(delta: i64) -> i64 {
+    let mut guard = SUBTITLE_DELAY_MS.lock().unwrap();
+    *guard = (*guard + delta).clamp(-10_000, 10_000);
+    *guard
+}
+
 pub fn get_current_subtitle_text(pos_ms: u64) -> Option<String> {
     let guard = ACTIVE_SUBTITLES.lock().unwrap();
     if let Some(entries) = guard.as_ref() {
-        for entry in entries {
-            if pos_ms >= entry.start_ms && pos_ms <= entry.end_ms {
+        let delay = *SUBTITLE_DELAY_MS.lock().unwrap();
+        let effective_pos_ms = if delay >= 0 {
+            pos_ms.saturating_add(delay as u64)
+        } else {
+            pos_ms.saturating_sub((-delay) as u64)
+        };
+
+        for (i, entry) in entries.iter().enumerate() {
+            // Provide a minimum readability hold of 2200ms unless the next cue begins sooner
+            let next_start = entries.get(i + 1).map(|e| e.start_ms).unwrap_or(u64::MAX);
+            let min_end = (entry.start_ms + 2200).min(next_start.saturating_sub(100));
+            let effective_end = entry.end_ms.max(min_end);
+
+            if effective_pos_ms >= entry.start_ms && effective_pos_ms <= effective_end {
                 return Some(entry.text.clone());
             }
         }
