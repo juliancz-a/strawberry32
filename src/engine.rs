@@ -39,6 +39,58 @@ static STREAM_STATUS: Mutex<StreamStatus> = Mutex::new(StreamStatus {
 static CURRENT_VIDEO_HASH: Mutex<Option<(String, u64)>> = Mutex::new(None);
 static BUNDLED_SUBTITLES: Mutex<Vec<crate::subtitles::BundledSubtitle>> = Mutex::new(Vec::new());
 
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetDiskFreeSpaceExW(
+        lpDirectoryName: *const u16,
+        lpFreeBytesAvailableToCaller: *mut u64,
+        lpTotalNumberOfBytes: *mut u64,
+        lpTotalNumberOfFreeBytes: *mut u64,
+    ) -> i32;
+}
+
+/// Queries free disk space in megabytes for the drive holding the specified path
+pub fn get_disk_free_mb(path: &std::path::Path) -> u64 {
+    use std::os::windows::ffi::OsStrExt;
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let mut free_avail: u64 = 0;
+    let mut total_bytes: u64 = 0;
+    let mut total_free: u64 = 0;
+    let ret = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut free_avail,
+            &mut total_bytes,
+            &mut total_free,
+        )
+    };
+    if ret != 0 {
+        free_avail / (1024 * 1024)
+    } else {
+        u64::MAX
+    }
+}
+
+/// Deletes a specific torrent cache folder or files after playback stops
+pub fn delete_torrent_cache(info_hash: &str) {
+    let cache_dir = get_cache_dir();
+    let lower_hash = info_hash.to_lowercase();
+    if let Ok(entries) = std::fs::read_dir(&cache_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
+            if name.contains(&lower_hash) {
+                if path.is_dir() {
+                    let _ = std::fs::remove_dir_all(&path);
+                } else {
+                    let _ = std::fs::remove_file(&path);
+                }
+                log_torrent(&format!("[CACHE] Deleted torrent payload for {} from disk", info_hash));
+            }
+        }
+    }
+}
+
 pub fn get_stream_status() -> StreamStatus {
     STREAM_STATUS.lock().unwrap().clone()
 }
@@ -199,7 +251,17 @@ async fn handle_start_stream(
     episode: Option<u32>,
     trackers: Vec<String>,
 ) -> Result<String, String> {
+    let t_fast_start = std::time::Instant::now();
     log_torrent(&format!("Preparing stream for infoHash: {}", info_hash));
+
+    // Phase 5: Disk Guard - Check free disk space before buffering
+    let cache_dir = get_cache_dir();
+    let free_mb = get_disk_free_mb(&cache_dir);
+    log_torrent(&format!("[DISK_GUARD] Free disk space on cache drive: {} MB", free_mb));
+    if free_mb < 500 {
+        log_err(&format!("[DISK_GUARD] Low disk space ({} MB < 500 MB). Triggering cache clean pass...", free_mb));
+        let _ = handle_clear_cache(&cache_dir);
+    }
 
     let verified_trackers = crate::trackers::get_verified_trackers();
     let mut all_trackers: Vec<String> = trackers;
@@ -322,7 +384,7 @@ async fn handle_start_stream(
 
     match init_success {
         Ok(()) => {
-            log_torrent("Torrent metadata resolved successfully.");
+            log_torrent(&format!("[FAST_START] Torrent metadata resolved in {} ms", t_fast_start.elapsed().as_millis()));
             let mut guard = STREAM_STATUS.lock().unwrap();
             guard.message = "Metadata resolved! Buffering initial segment...".to_string();
         }
@@ -489,8 +551,9 @@ async fn handle_start_stream(
 
     let ttfb_ms = ttfb_timer.elapsed().as_millis();
     log_torrent(&format!(
-        "[TORRENT] TTFB: {} ms | Container metadata inspected & pre-buffered. Ready for player.",
-        ttfb_ms
+        "[FAST_START] TTFB: {} ms | Stream ready for Media Foundation in {} ms total",
+        ttfb_ms,
+        t_fast_start.elapsed().as_millis()
     ));
 
     // Mark stream status ready

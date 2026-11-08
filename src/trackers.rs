@@ -79,9 +79,26 @@ pub fn init_tracker_manager() {
 
     if needs_refresh {
         log_info("Tracker cache expired or missing. Spawning background tracker prober...");
-        tokio::spawn(async move {
-            refresh_and_probe_trackers().await;
-        });
+        std::thread::Builder::new()
+            .name("tracker-prober".to_string())
+            .spawn(|| {
+                let rt = match tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .build()
+                {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        log_err(&format!("Tracker prober runtime failed: {}", e));
+                        return;
+                    }
+                };
+
+                rt.block_on(async {
+                    refresh_and_probe_trackers().await;
+                });
+            })
+            .expect("Failed to spawn tracker-prober thread");
     }
 }
 

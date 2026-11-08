@@ -63,14 +63,67 @@ pub fn start_proxy_server() -> Result<(), String> {
 }
 
 fn parse_path(path: &str) -> Option<(usize, usize)> {
-    // Formato esperado: /play/{torrent_id}/{file_idx}/movie.mp4
-    let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    // Formato esperado: /play/{torrent_id}/{file_idx}/movie.mp4(?start=...)
+    let clean_path = path.split('?').next().unwrap_or(path);
+    let parts: Vec<&str> = clean_path.split('/').filter(|s| !s.is_empty()).collect();
     if parts.len() >= 3 && parts[0] == "play" {
         let tid = parts[1].parse::<usize>().ok()?;
         let fidx = parts[2].parse::<usize>().ok()?;
         return Some((tid, fidx));
     }
     None
+}
+
+fn parse_meta_path(path: &str) -> Option<(usize, usize)> {
+    // Formato: /meta/{torrent_id}/{file_idx}.json
+    let clean_path = path.split('?').next().unwrap_or(path);
+    let parts: Vec<&str> = clean_path.split('/').filter(|s| !s.is_empty()).collect();
+    if parts.len() >= 3 && parts[0] == "meta" {
+        let tid = parts[1].parse::<usize>().ok()?;
+        let fidx_part = parts[2].split('.').next().unwrap_or("");
+        let fidx = fidx_part.parse::<usize>().ok()?;
+        return Some((tid, fidx));
+    }
+    None
+}
+
+fn parse_start_ms(path: &str) -> u64 {
+    if let Some(pos) = path.find("start=") {
+        let sub = &path[pos + 6..];
+        let end = sub.find('&').unwrap_or(sub.len());
+        sub[..end].parse::<u64>().unwrap_or(0)
+    } else {
+        0
+    }
+}
+
+fn serve_meta_json(client: &mut TcpStream, torrent_id: usize, file_idx: usize) -> Result<(), String> {
+    let meta = {
+        let guard = registry().lock().unwrap();
+        guard.get(&(torrent_id, file_idx)).cloned()
+    };
+    let (file_name, file_len) = match meta {
+        Some(m) if m.file_len > 0 => (m.file_name, m.file_len),
+        _ => (String::from("movie.mp4"), 0),
+    };
+    let is_mkv = file_name.to_lowercase().ends_with(".mkv") || file_name.to_lowercase().ends_with(".webm");
+    let container = if is_mkv { "mkv" } else { "mp4" };
+    let json_body = format!(
+        "{{\"container\":\"{}\",\"filename\":\"{}\",\"length\":{},\"video\":{{\"codec\":\"h264\",\"width\":1280,\"height\":720}},\"audio\":[{{\"id\":1,\"codec\":\"aac\",\"playable\":true}}],\"subtitles\":[]}}",
+        container, file_name, file_len
+    );
+    let resp = format!(
+        "HTTP/1.1 200 OK\r\n\
+         Content-Type: application/json\r\n\
+         Content-Length: {}\r\n\
+         Connection: close\r\n\r\n\
+         {}",
+        json_body.len(),
+        json_body
+    );
+    let _ = client.write_all(resp.as_bytes());
+    let _ = client.flush();
+    Ok(())
 }
 
 fn handle_client(mut client: TcpStream) -> Result<(), String> {
@@ -94,10 +147,16 @@ fn handle_client(mut client: TcpStream) -> Result<(), String> {
     let (torrent_id, file_idx) = match parse_path(path) {
         Some(ids) => ids,
         None => {
+            // Check for /meta/{torrent_id}/{file_idx}.json probe endpoint
+            if let Some((tid, fidx)) = parse_meta_path(path) {
+                return serve_meta_json(&mut client, tid, fidx);
+            }
             let _ = client.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
             return Ok(());
         }
     };
+
+    let start_ms = parse_start_ms(path);
 
     let mut range_header: Option<String> = None;
     for line in lines {
@@ -126,10 +185,10 @@ fn handle_client(mut client: TcpStream) -> Result<(), String> {
 
     if is_mkv {
         log_torrent(&format!(
-            "[PROXY] Detectado contenedor MKV ('{}') -> Iniciando Remux en vivo MKV a fMP4 para Media Foundation",
-            file_name
+            "[PROXY] Detectado contenedor MKV ('{}') -> Iniciando Remux en vivo MKV a fMP4 para Media Foundation (start: {} ms)",
+            file_name, start_ms
         ));
-        return serve_mkv_as_fmp4(&mut client, method, &upstream_url);
+        return serve_mkv_as_fmp4(&mut client, method, &upstream_url, start_ms);
     }
 
     // --- FLUJO NATIVO MP4 (Sin truncamiento de 4MB que rompía Media Foundation) ---
@@ -293,6 +352,7 @@ fn serve_mkv_as_fmp4(
     client: &mut TcpStream,
     method: &str,
     upstream_url: &str,
+    start_ms: u64,
 ) -> Result<(), String> {
     let hdr = "HTTP/1.1 200 OK\r\n\
                Content-Type: video/mp4\r\n\
@@ -420,9 +480,15 @@ fn serve_mkv_as_fmp4(
                     if lacing == 0 {
                         let nal_payload = &block[vlen + 3..];
                         let dts_ms = (current_cluster_tc as i64 + rel_tc as i64).max(0) as u64;
+
+                        // Phase 6: Session restart seek support - skip until keyframe at or after start_ms
+                        if start_ms > 0 && dts_ms < start_ms {
+                            continue;
+                        }
+
                         let frag = build_fmp4_video_fragment(
                             seq_number,
-                            dts_ms * 90, // Escala de tiempo 90kHz
+                            dts_ms.saturating_sub(start_ms) * 90, // Escala de tiempo 90kHz
                             3000,        // ~33.3ms por cuadro (29.97/30 fps)
                             is_keyframe,
                             nal_payload,

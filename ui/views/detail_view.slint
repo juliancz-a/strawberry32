@@ -209,6 +209,7 @@ export component DetailView inherits Rectangle {
     in property <string> detail_genres: "";
     in property <string> detail_cast: "";
     in property <string> detail_director: "";
+    in-out property <bool> desc_expanded: false;
 
     // Series episode selector properties
     in property <[int]> seasons_list: [];
@@ -322,30 +323,38 @@ export component DetailView inherits Rectangle {
 
                 // Hero Details Card with optional backdrop
                 Rectangle {
-                    height: 190px;
+                    min-height: 190px;
                     background: Theme.surface;
                     border-radius: 8px;
                     border-width: 1px;
                     border-color: Theme.surface-raised;
-                    clip: true;
 
-                    // Backdrop if present
-                    if root.has_detail_backdrop : Image {
+                    // Backdrop if present (clipped cleanly inside inner bounds)
+                    if root.has_detail_backdrop : Rectangle {
                         width: 100%;
                         height: 100%;
-                        source: root.detail_backdrop;
-                        image-fit: cover;
-                        opacity: 0.22;
+                        border-radius: 8px;
+                        clip: true;
+                        Image {
+                            width: 100%;
+                            height: 100%;
+                            source: root.detail_backdrop;
+                            image-fit: cover;
+                            opacity: 0.22;
+                        }
                     }
 
                     HorizontalLayout {
-                        padding: 12px;
+                        padding: 14px;
                         spacing: 16px;
+                        alignment: start;
 
                         // Poster placeholder / thumbnail
                         Rectangle {
-                            width: 110px;
-                            height: 165px;
+                            width: 115px;
+                            height: 172px;
+                            vertical-stretch: 0;
+                            horizontal-stretch: 0;
                             background: Theme.surface-raised;
                             border-radius: 6px;
                             clip: true;
@@ -366,59 +375,60 @@ export component DetailView inherits Rectangle {
 
                         // Rich metadata details
                         VerticalLayout {
-                            spacing: 6px;
-                            alignment: space-between;
+                            spacing: 8px;
+                            alignment: start;
 
-                            VerticalLayout {
-                                spacing: 4px;
+                            Text {
+                                text: root.detail_title;
+                                font-size: 20px;
+                                font-weight: 800;
+                                color: Theme.text;
+                                overflow: elide;
+                            }
 
-                                Text {
-                                    text: root.detail_title;
-                                    font-size: 20px;
-                                    font-weight: 800;
-                                    color: Theme.text;
-                                    overflow: elide;
-                                }
+                            // Badges row (Year, Rating, Runtime, Genres)
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
 
-                                // Badges row (Year, Rating, Runtime, Genres)
-                                HorizontalLayout {
-                                    spacing: 8px;
-                                    alignment: start;
-
-                                    if root.detail_imdb_rating != "" : Rectangle {
-                                        height: 20px;
-                                        background: #e5a00d;
-                                        border-radius: 3px;
-                                        HorizontalLayout {
-                                            padding-left: 6px;
-                                            padding-right: 6px;
-                                            alignment: center;
-                                            Text {
-                                                text: "★ " + root.detail_imdb_rating;
-                                                font-size: 11px;
-                                                font-weight: 800;
-                                                color: #000000;
-                                                vertical-alignment: center;
-                                            }
+                                if root.detail_imdb_rating != "" : Rectangle {
+                                    height: 20px;
+                                    background: #e5a00d;
+                                    border-radius: 3px;
+                                    HorizontalLayout {
+                                        padding-left: 6px;
+                                        padding-right: 6px;
+                                        alignment: center;
+                                        Text {
+                                            text: "★ " + root.detail_imdb_rating;
+                                            font-size: 11px;
+                                            font-weight: 800;
+                                            color: #000000;
+                                            vertical-alignment: center;
                                         }
                                     }
-
-                                    if root.detail_runtime != "" : Text {
-                                        text: root.detail_runtime;
-                                        font-size: 12px;
-                                        font-weight: 600;
-                                        color: Theme.text-muted;
-                                        vertical-alignment: center;
-                                    }
-
-                                    if root.detail_genres != "" : Text {
-                                        text: "• " + root.detail_genres;
-                                        font-size: 12px;
-                                        color: Theme.accent;
-                                        vertical-alignment: center;
-                                        overflow: elide;
-                                    }
                                 }
+
+                                if root.detail_runtime != "" : Text {
+                                    text: root.detail_runtime;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    color: Theme.text-muted;
+                                    vertical-alignment: center;
+                                }
+
+                                if root.detail_genres != "" : Text {
+                                    text: "• " + root.detail_genres;
+                                    font-size: 12px;
+                                    color: Theme.accent;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                            }
+
+                            // Expandable Description Block
+                            VerticalLayout {
+                                spacing: 4px;
 
                                 Text {
                                     text: root.detail_desc != "" ? root.detail_desc : "No synopsis available for this title.";
@@ -426,22 +436,62 @@ export component DetailView inherits Rectangle {
                                     color: Theme.text-muted;
                                     wrap: word-wrap;
                                     overflow: elide;
-                                    max-height: 34px;
+                                    max-height: root.desc_expanded ? 320px : 52px;
                                 }
 
-                                if root.detail_cast != "" : Text {
-                                    text: "Cast: " + root.detail_cast;
-                                    font-size: 11px;
-                                    color: Theme.text-faint;
-                                    overflow: elide;
-                                    max-height: 16px;
+                                if root.detail_desc != "" : HorizontalLayout {
+                                    alignment: start;
+                                    Rectangle {
+                                        height: 20px;
+                                        background: desc_touch.has-hover ? #25262b : #18191c;
+                                        border-radius: 4px;
+                                        border-width: 1px;
+                                        border-color: desc_touch.has-hover ? Theme.accent : #333438;
+
+                                        desc_touch := TouchArea {
+                                            width: 100%;
+                                            height: 100%;
+                                            clicked => {
+                                                root.desc_expanded = !root.desc_expanded;
+                                            }
+                                        }
+
+                                        HorizontalLayout {
+                                            padding-left: 8px;
+                                            padding-right: 8px;
+                                            alignment: center;
+                                            Text {
+                                                text: root.desc_expanded ? "Show Less ▲" : "... More Details ▼";
+                                                font-size: 11px;
+                                                font-weight: 700;
+                                                color: Theme.accent;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
                                 }
+                            }
+
+                            if root.detail_cast != "" : Text {
+                                text: "Cast: " + root.detail_cast;
+                                font-size: 11px;
+                                color: Theme.text-faint;
+                                wrap: word-wrap;
+                                overflow: elide;
+                                max-height: root.desc_expanded ? 60px : 16px;
+                            }
+
+                            if root.detail_director != "" && root.desc_expanded : Text {
+                                text: "Director: " + root.detail_director;
+                                font-size: 11px;
+                                color: Theme.text-faint;
+                                wrap: word-wrap;
                             }
 
                             // Prominent "Play Best Match" Button
                             if root.stream_items.length > 0 : Rectangle {
-                                width: 160px;
-                                height: 34px;
+                                width: 170px;
+                                height: 36px;
                                 background: best_touch.pressed ? Theme.accent-pressed : (best_touch.has-hover ? #ff709e : Theme.accent);
                                 border-radius: 6px;
 

@@ -410,13 +410,58 @@ pub fn load_multi_row_home_catalog(app_weak: slint::Weak<MainWindow>) {
 
                 ui.set_status_text("Home catalog ready: 6 categories loaded.".into());
 
-                // Trigger initial loading of posters for all 6 rows (first 15 items each)
+                // Trigger progressive loading of posters for all 6 rows:
+                // Phase 1: Immediately visible posters (0..8) across all rows load first with highest priority
                 for r in 0..6 {
-                    ui.invoke_request_lazy_range(r, 0, 15);
+                    ui.invoke_request_lazy_range(r, 0, 8);
+                }
+                // Phase 2: Remaining offscreen / horizontally scrollable posters (8..100) are queued right after
+                // so the background worker threads seamlessly download and cache them before the user scrolls
+                for r in 0..6 {
+                    ui.invoke_request_lazy_range(r, 8, 100);
                 }
             }
         });
     });
+}
+
+fn rotate_hero(ui: &MainWindow, delta: i32) {
+    let guard = HERO_ITEMS.lock().unwrap();
+    if guard.is_empty() { return; }
+    let mut idx_guard = CURRENT_HERO_IDX.lock().unwrap();
+    let len = guard.len();
+    if delta > 0 {
+        *idx_guard = (*idx_guard + 1) % len;
+    } else {
+        *idx_guard = (*idx_guard + len - 1) % len;
+    }
+    let curr = *idx_guard;
+    if let Some(item) = guard.get(curr) {
+        ui.set_hero_title(item.name.clone().into());
+        let year = item.year.clone().unwrap_or_else(|| "2024".to_string());
+        let rating = item.imdb_rating.clone().unwrap_or_else(|| "8.2".to_string());
+        let itype = item.item_type.clone().unwrap_or_else(|| "movie".to_string());
+        ui.set_hero_meta(format!("{} • ★ {} • {}", year, rating, itype.to_uppercase()).into());
+        ui.set_hero_desc(item.description.clone().unwrap_or_else(|| "Stream now with hardware acceleration.".to_string()).into());
+        ui.set_hero_id(item.id.clone().into());
+        ui.set_hero_type(itype.into());
+        ui.set_hero_index(curr as i32);
+        ui.set_hero_total(len as i32);
+        ui.set_has_hero_backdrop(false);
+
+        let bg_url = item.background.clone().or_else(|| item.poster.clone());
+        if let Some(url) = bg_url {
+            let app_weak_hero = ui.as_weak();
+            crate::ui::images::request_image(url, 640, 360, move |opt_img| {
+                if let Some(img) = opt_img {
+                    if let Some(u) = app_weak_hero.upgrade() {
+                        u.set_hero_backdrop(img);
+                        u.set_has_hero_backdrop(true);
+                    }
+                }
+            });
+        }
+    }
 }
 
 pub fn run_app() -> Result<(), String> {
@@ -467,9 +512,11 @@ pub fn run_app() -> Result<(), String> {
                     ui.set_search_series_results(ModelRc::from(Rc::new(VecModel::from(series_items))));
                     ui.set_status_text(format!("Found {} movies and {} series for '{}'", m_count, s_count, query_str).into());
 
-                    // Lazy load first 15 posters of movies and series
-                    ui.invoke_request_lazy_range(10, 0, 15);
-                    ui.invoke_request_lazy_range(11, 0, 15);
+                    // Request posters for all search results (visible 0..8 first, then rest)
+                    ui.invoke_request_lazy_range(10, 0, 8);
+                    ui.invoke_request_lazy_range(11, 0, 8);
+                    ui.invoke_request_lazy_range(10, 8, 100);
+                    ui.invoke_request_lazy_range(11, 8, 100);
                 }
             });
         });
@@ -494,6 +541,16 @@ pub fn run_app() -> Result<(), String> {
             refresh_settings(&ui);
         }
         load_multi_row_home_catalog(app_weak2);
+    });
+
+    // Clear Watch History
+    let app_weak_wh = app.as_weak();
+    app.on_clear_watch_history(move || {
+        state::clear_watch_history();
+        if let Some(ui) = app_weak_wh.upgrade() {
+            refresh_library(&ui);
+            ui.set_status_text("Watch history cleared.".into());
+        }
     });
 
     // --- Settings View Callbacks ---
@@ -742,45 +799,6 @@ pub fn run_app() -> Result<(), String> {
     });
 
     // 5. Hero Carousel Prev / Next Callbacks
-    let rotate_hero = |ui: &MainWindow, delta: i32| {
-        let guard = HERO_ITEMS.lock().unwrap();
-        if guard.is_empty() { return; }
-        let mut idx_guard = CURRENT_HERO_IDX.lock().unwrap();
-        let len = guard.len();
-        if delta > 0 {
-            *idx_guard = (*idx_guard + 1) % len;
-        } else {
-            *idx_guard = (*idx_guard + len - 1) % len;
-        }
-        let curr = *idx_guard;
-        if let Some(item) = guard.get(curr) {
-            ui.set_hero_title(item.name.clone().into());
-            let year = item.year.clone().unwrap_or_else(|| "2024".to_string());
-            let rating = item.imdb_rating.clone().unwrap_or_else(|| "8.2".to_string());
-            let itype = item.item_type.clone().unwrap_or_else(|| "movie".to_string());
-            ui.set_hero_meta(format!("{} • ★ {} • {}", year, rating, itype.to_uppercase()).into());
-            ui.set_hero_desc(item.description.clone().unwrap_or_else(|| "Stream now with hardware acceleration.".to_string()).into());
-            ui.set_hero_id(item.id.clone().into());
-            ui.set_hero_type(itype.into());
-            ui.set_hero_index(curr as i32);
-            ui.set_hero_total(len as i32);
-            ui.set_has_hero_backdrop(false);
-
-            let bg_url = item.background.clone().or_else(|| item.poster.clone());
-            if let Some(url) = bg_url {
-                let app_weak_hero = ui.as_weak();
-                crate::ui::images::request_image(url, 640, 360, move |opt_img| {
-                    if let Some(img) = opt_img {
-                        if let Some(u) = app_weak_hero.upgrade() {
-                            u.set_hero_backdrop(img);
-                            u.set_has_hero_backdrop(true);
-                        }
-                    }
-                });
-            }
-        }
-    };
-
     let app_weak_hp = app.as_weak();
     app.on_hero_prev(move || {
         if let Some(ui) = app_weak_hp.upgrade() {
@@ -810,6 +828,7 @@ pub fn run_app() -> Result<(), String> {
             ui.set_detail_is_series(type_str == "series");
             ui.set_selected_season(1);
             ui.set_selected_episode(1);
+            ui.set_detail_desc_expanded(false);
             ui.set_has_detail_backdrop(false);
             ui.set_detail_poster(slint::Image::default());
             ui.set_is_streams_loading(true);
@@ -1221,11 +1240,23 @@ pub fn run_app() -> Result<(), String> {
                                                 });
 
                                                 let app_weak_close = app_weak2.clone();
+                                                let info_hash_for_close = stream_clone.info_hash.clone();
                                                 overlay.on_close_clicked(move || {
                                                     crate::ui::overlay::hide_overlay();
                                                     engine::cancel_stream_loading();
                                                     player::stop_embedded_player();
                                                     destroy_video_hwnd();
+
+                                                    // Phase 5: Delete torrent payload after playback if keep_after_playback is false
+                                                    let settings = state::load_settings();
+                                                    if !settings.cache.keep_after_playback {
+                                                        let hash = info_hash_for_close.clone();
+                                                        std::thread::spawn(move || {
+                                                            std::thread::sleep(std::time::Duration::from_millis(500));
+                                                            engine::delete_torrent_cache(&hash);
+                                                        });
+                                                    }
+
                                                     if let Some(ui) = app_weak_close.upgrade() {
                                                         ui.set_current_view(0);
                                                         ui.set_is_player_loading(false);
@@ -1542,12 +1573,27 @@ pub fn run_app() -> Result<(), String> {
 
     // 19. Periodic UI update timer (250 ms)
     let app_weak = app.as_weak();
+    let mut hero_rotate_ticks: u32 = 0;
     let timer = slint::Timer::default();
     timer.start(
         slint::TimerMode::Repeated,
         std::time::Duration::from_millis(250),
         move || {
             if let Some(ui) = app_weak.upgrade() {
+                // Hero banner auto-rotation (every 10s if on Home view and reduce_animations is false)
+                if ui.get_current_view() == 0 {
+                    hero_rotate_ticks += 1;
+                    if hero_rotate_ticks >= 40 {
+                        hero_rotate_ticks = 0;
+                        let settings = state::load_settings();
+                        if !settings.ui.reduce_animations && settings.ui.hero_autorotate {
+                            rotate_hero(&ui, 1);
+                        }
+                    }
+                } else {
+                    hero_rotate_ticks = 0;
+                }
+
                 // Update stream loading telemetry
                 let stream_status = engine::get_stream_status();
                 if stream_status.is_loading && ui.get_current_view() == 2 {

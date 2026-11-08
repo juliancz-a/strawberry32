@@ -307,6 +307,11 @@ pub fn record_watch_progress(
     save_watch_history(&history);
 }
 
+pub fn clear_watch_history() {
+    let history = WatchHistory::default();
+    save_watch_history(&history);
+}
+
 pub fn load_addons_config() -> AddonsConfig {
     let mut guard = ADDONS_CONFIG.lock().unwrap();
     if let Some(cfg) = guard.as_ref() {

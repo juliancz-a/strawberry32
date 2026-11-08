@@ -71,6 +71,7 @@ export component MainWindow inherits Window {
     in-out property <string> detail_genres: "";
     in-out property <string> detail_cast: "";
     in-out property <string> detail_director: "";
+    in-out property <bool> detail_desc_expanded: false;
 
     // Series episode selector properties
     in-out property <[int]> seasons_list: [];
@@ -123,6 +124,7 @@ export component MainWindow inherits Window {
     callback filter_clicked(string);
     callback quick_dev_setup();
     callback clear_logs();
+    callback clear_watch_history();
 
     callback settings_tab_changed(int);
     callback settings_install_addon(string);
@@ -337,6 +339,7 @@ export component MainWindow inherits Window {
                     detail_genres: root.detail_genres;
                     detail_cast: root.detail_cast;
                     detail_director: root.detail_director;
+                    desc_expanded <=> root.detail_desc_expanded;
 
                     seasons_list: root.seasons_list;
                     selected_season <=> root.selected_season;
@@ -470,6 +473,7 @@ export component MainWindow inherits Window {
                 if root.current_view == 4 : LibraryView {
                     library_items: root.library_items;
                     card_selected(id, type) => { root.card_selected(id, type); }
+                    clear_history_clicked => { root.clear_watch_history(); }
                     explore_clicked => {
                         root.current_view = 0;
                     }
