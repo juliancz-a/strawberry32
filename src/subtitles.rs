@@ -10,6 +10,13 @@ pub struct SubtitleEntry {
     pub text: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct BundledSubtitle {
+    pub file_idx: usize,
+    pub filename: String,
+    pub lang: String,
+}
+
 #[derive(Deserialize, Debug)]
 struct SubtitleResponse {
     #[serde(default)]
@@ -86,25 +93,77 @@ pub fn get_current_subtitle_text(pos_ms: u64) -> Option<String> {
     None
 }
 
-/// Fetches available subtitle tracks for a movie or episode from OpenSubtitles v3 Stremio addon
+/// Computes OpenSubtitles 64-bit checksum hash over file length + head 64KB + tail 64KB.
+pub fn calculate_opensub_hash(file_len: u64, head: &[u8], tail: &[u8]) -> String {
+    let mut hash = file_len;
+
+    for chunk in head.chunks(8) {
+        let mut buf = [0u8; 8];
+        buf[..chunk.len()].copy_from_slice(chunk);
+        hash = hash.wrapping_add(u64::from_le_bytes(buf));
+    }
+
+    for chunk in tail.chunks(8) {
+        let mut buf = [0u8; 8];
+        buf[..chunk.len()].copy_from_slice(chunk);
+        hash = hash.wrapping_add(u64::from_le_bytes(buf));
+    }
+
+    format!("{:016x}", hash)
+}
+
+/// Scans torrent files for bundled external subtitle files (.srt, .vtt, .ass, .ssa)
+pub fn find_bundled_subtitles(files: &[(usize, String, u64)]) -> Vec<BundledSubtitle> {
+    let mut list = Vec::new();
+    let sub_exts = [".srt", ".vtt", ".ass", ".ssa"];
+
+    for (idx, filename, _) in files {
+        let lower = filename.to_lowercase();
+        if sub_exts.iter().any(|ext| lower.ends_with(ext)) {
+            // Extract language from filename tokens (e.g., "movie.en.srt", "movie.spanish.vtt")
+            let lang = if lower.contains(".es.") || lower.contains(".spa.") || lower.contains("spanish") {
+                "spa".to_string()
+            } else if lower.contains(".fr.") || lower.contains(".fre.") || lower.contains("french") {
+                "fre".to_string()
+            } else if lower.contains(".de.") || lower.contains(".ger.") || lower.contains("german") {
+                "ger".to_string()
+            } else if lower.contains(".it.") || lower.contains(".ita.") || lower.contains("italian") {
+                "ita".to_string()
+            } else if lower.contains(".pt.") || lower.contains(".por.") || lower.contains("portuguese") {
+                "por".to_string()
+            } else if lower.contains(".ru.") || lower.contains(".rus.") || lower.contains("russian") {
+                "rus".to_string()
+            } else {
+                "eng".to_string()
+            };
+
+            log_info(&format!("Found bundled torrent subtitle: {} (lang: {})", filename, lang));
+            list.push(BundledSubtitle {
+                file_idx: *idx,
+                filename: filename.clone(),
+                lang,
+            });
+        }
+    }
+
+    list
+}
+
+/// Fetches available subtitle tracks for a movie or episode from OpenSubtitles v3 Stremio addon.
+/// Supports frame-accurate lookup via videoHash and videoSize when available.
 pub fn fetch_subtitle_tracks(
     item_type: &str,
     imdb_id: &str,
     season: Option<u32>,
     episode: Option<u32>,
+    video_hash: Option<&str>,
+    video_size: Option<u64>,
 ) -> Result<Vec<SubtitleTrack>, String> {
-    let query_id = if item_type == "series" {
+    let base_query_id = if item_type == "series" {
         format!("{}:{}:{}", imdb_id, season.unwrap_or(1), episode.unwrap_or(1))
     } else {
         imdb_id.to_string()
     };
-
-    let url = format!(
-        "https://opensubtitles-v3.strem.io/subtitles/{}/{}.json",
-        item_type, query_id
-    );
-
-    log_info(&format!("Searching subtitles in OpenSubtitles: {}", url));
 
     let client = match crate::addons::create_agent() {
         Ok(a) => a,
@@ -114,10 +173,42 @@ pub fn fetch_subtitle_tracks(
         }
     };
 
-    let resp = match client.get(&url).call() {
+    // 1. Try frame-accurate videoHash query if available
+    if let (Some(hash), Some(size)) = (video_hash, video_size) {
+        let hash_url = format!(
+            "https://opensubtitles-v3.strem.io/subtitles/{}/{}/videoHash={}/videoSize={}.json",
+            item_type, base_query_id, hash, size
+        );
+        log_info(&format!("Searching frame-accurate subtitles with videoHash: {}", hash_url));
+
+        if let Ok(resp) = client.get(&hash_url).call() {
+            if let Ok(parsed) = resp.into_json::<SubtitleResponse>() {
+                if !parsed.subtitles.is_empty() {
+                    let mut tracks = Vec::new();
+                    for sub in parsed.subtitles {
+                        if let (Some(url), Some(lang)) = (sub.url, sub.lang) {
+                            let id = sub.id.unwrap_or_else(|| lang.clone());
+                            tracks.push(SubtitleTrack { id, lang, url });
+                        }
+                    }
+                    log_info(&format!("Found {} frame-accurate subtitle tracks via videoHash.", tracks.len()));
+                    return Ok(tracks);
+                }
+            }
+        }
+    }
+
+    // 2. Standard ID-based fallback query
+    let fallback_url = format!(
+        "https://opensubtitles-v3.strem.io/subtitles/{}/{}.json",
+        item_type, base_query_id
+    );
+    log_info(&format!("Searching subtitles via standard ID: {}", fallback_url));
+
+    let resp = match client.get(&fallback_url).call() {
         Ok(r) => r,
         Err(e) => {
-            log_err(&format!("Failed searching subtitles at {}: {}", url, e));
+            log_err(&format!("Failed searching subtitles at {}: {}", fallback_url, e));
             return Err(e.to_string());
         }
     };
@@ -138,23 +229,22 @@ pub fn fetch_subtitle_tracks(
         }
     }
 
-    log_info(&format!("Found {} subtitle tracks.", tracks.len()));
+    log_info(&format!("Found {} subtitle tracks via standard metadata.", tracks.len()));
     Ok(tracks)
 }
 
-/// Downloads and parses an SRT subtitle file from URL with encoding handling (UTF-8 / Latin-1)
-pub fn download_and_parse_srt(url: &str) -> Result<Vec<SubtitleEntry>, String> {
-    log_info(&format!("Downloading SRT subtitle: {}", url));
+/// Downloads and parses a subtitle file from URL (auto-detecting SRT, WebVTT, ASS/SSA)
+pub fn download_and_parse_subtitle(url: &str) -> Result<Vec<SubtitleEntry>, String> {
+    log_info(&format!("Downloading subtitle: {}", url));
 
     let client = crate::addons::create_agent()?;
-
     let resp = client.get(url).call().map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
     resp.into_reader()
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
 
-    // Try decoding UTF-8 first; if invalid, fall back to Windows-1252 / ISO-8859-1 for Spanish accents
+    // Try decoding UTF-8 first; if invalid, fall back to Windows-1252 / ISO-8859-1 for Spanish/European accents
     let text = match std::str::from_utf8(&bytes) {
         Ok(s) => s.to_string(),
         Err(_) => {
@@ -163,11 +253,25 @@ pub fn download_and_parse_srt(url: &str) -> Result<Vec<SubtitleEntry>, String> {
         }
     };
 
-    parse_srt(&text)
+    parse_subtitle_content(&text)
 }
 
+/// Auto-detects subtitle format (SRT, WebVTT, ASS/SSA) and parses into standardized SubtitleEntry cues.
+pub fn parse_subtitle_content(content: &str) -> Result<Vec<SubtitleEntry>, String> {
+    let trimmed = content.trim_start();
+    if trimmed.starts_with("WEBVTT") {
+        parse_vtt(content)
+    } else if content.contains("[Script Info]") || content.contains("Dialogue:") {
+        parse_ass(content)
+    } else {
+        parse_srt(content)
+    }
+}
+
+// =========================================================================
+// SRT Parser
+// =========================================================================
 fn parse_srt_timestamp(ts_str: &str) -> Option<u64> {
-    // Format: 00:01:23,456 or 00:01:23.456
     let ts_str = ts_str.trim().replace('.', ",");
     let parts: Vec<&str> = ts_str.split(':').collect();
     if parts.len() != 3 {
@@ -196,7 +300,6 @@ fn parse_srt_timestamp(ts_str: &str) -> Option<u64> {
 }
 
 fn clean_sub_text(raw: &str) -> String {
-    // Strip simple HTML tags like <i>, </i>, <font ...>, </font>, <b>, </b>
     let mut out = String::with_capacity(raw.len());
     let mut inside_tag = false;
     for c in raw.chars() {
@@ -222,7 +325,6 @@ pub fn parse_srt(content: &str) -> Result<Vec<SubtitleEntry>, String> {
             continue;
         }
 
-        // Line 0 is usually index, Line 1 is timestamps: "00:00:10,000 --> 00:00:15,000"
         let (ts_line_idx, text_start_idx) = if lines[0].contains("-->") {
             (0, 1)
         } else if lines.len() >= 2 && lines[1].contains("-->") {
@@ -258,7 +360,151 @@ pub fn parse_srt(content: &str) -> Result<Vec<SubtitleEntry>, String> {
         }
     }
 
-    log_info(&format!("SRT subtitle parsed with {} cues.", entries.len()));
     Ok(entries)
 }
 
+// =========================================================================
+// WebVTT Parser
+// =========================================================================
+pub fn parse_vtt(content: &str) -> Result<Vec<SubtitleEntry>, String> {
+    let mut entries = Vec::new();
+    let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
+    let blocks: Vec<&str> = normalized.split("\n\n").collect();
+
+    for block in blocks {
+        let lines: Vec<&str> = block.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+        let Some(ts_idx) = lines.iter().position(|l| l.contains("-->")) else {
+            continue;
+        };
+
+        let ts_parts: Vec<&str> = lines[ts_idx].split("-->").collect();
+        if ts_parts.len() != 2 {
+            continue;
+        }
+
+        let start_ms = match parse_vtt_timestamp(ts_parts[0]) {
+            Some(t) => t,
+            None => continue,
+        };
+        let end_ms = match parse_vtt_timestamp(ts_parts[1]) {
+            Some(t) => t,
+            None => continue,
+        };
+
+        let text = lines[ts_idx + 1..].join("\n");
+        let cleaned = clean_sub_text(&text);
+        if !cleaned.is_empty() {
+            entries.push(SubtitleEntry {
+                start_ms,
+                end_ms,
+                text: cleaned,
+            });
+        }
+    }
+
+    Ok(entries)
+}
+
+fn parse_vtt_timestamp(raw: &str) -> Option<u64> {
+    // VTT timestamp: HH:MM:SS.mmm or MM:SS.mmm
+    let token = raw.trim().split_whitespace().next()?;
+    let parts: Vec<&str> = token.split(':').collect();
+
+    if parts.len() == 3 {
+        let h: u64 = parts[0].parse().ok()?;
+        let m: u64 = parts[1].parse().ok()?;
+        let sec_parts: Vec<&str> = parts[2].split('.').collect();
+        let s: u64 = sec_parts[0].parse().ok()?;
+        let ms: u64 = sec_parts.get(1).and_then(|x| x.parse().ok()).unwrap_or(0);
+        Some(h * 3_600_000 + m * 60_000 + s * 1_000 + ms)
+    } else if parts.len() == 2 {
+        let m: u64 = parts[0].parse().ok()?;
+        let sec_parts: Vec<&str> = parts[1].split('.').collect();
+        let s: u64 = sec_parts[0].parse().ok()?;
+        let ms: u64 = sec_parts.get(1).and_then(|x| x.parse().ok()).unwrap_or(0);
+        Some(m * 60_000 + s * 1_000 + ms)
+    } else {
+        None
+    }
+}
+
+// =========================================================================
+// ASS / SSA Parser (with {\...} override tag stripping & \N newline handling)
+// =========================================================================
+pub fn parse_ass(content: &str) -> Result<Vec<SubtitleEntry>, String> {
+    let mut entries = Vec::new();
+    let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
+
+    for line in normalized.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("Dialogue:") {
+            continue;
+        }
+
+        let payload = trimmed.strip_prefix("Dialogue:").unwrap().trim();
+        // ASS Dialogue has at least 9 comma-separated fields:
+        // Marked/Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+        let parts: Vec<&str> = payload.splitn(10, ',').collect();
+        if parts.len() < 10 {
+            continue;
+        }
+
+        let start_ms = match parse_ass_timestamp(parts[1]) {
+            Some(t) => t,
+            None => continue,
+        };
+        let end_ms = match parse_ass_timestamp(parts[2]) {
+            Some(t) => t,
+            None => continue,
+        };
+
+        let raw_text = parts[9];
+        let cleaned = clean_ass_text(raw_text);
+
+        if !cleaned.is_empty() {
+            entries.push(SubtitleEntry {
+                start_ms,
+                end_ms,
+                text: cleaned,
+            });
+        }
+    }
+
+    Ok(entries)
+}
+
+fn parse_ass_timestamp(raw: &str) -> Option<u64> {
+    // Format: H:MM:SS.cc (centiseconds)
+    let parts: Vec<&str> = raw.trim().split(':').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+
+    let h: u64 = parts[0].parse().ok()?;
+    let m: u64 = parts[1].parse().ok()?;
+    let sec_parts: Vec<&str> = parts[2].split('.').collect();
+    let s: u64 = sec_parts[0].parse().ok()?;
+    let cs: u64 = sec_parts.get(1).and_then(|x| x.parse().ok()).unwrap_or(0);
+
+    Some(h * 3_600_000 + m * 60_000 + s * 1_000 + cs * 10)
+}
+
+fn clean_ass_text(raw: &str) -> String {
+    // Strip ASS override tags like {\pos(100,200)}, {\c&HFFFFFF&}, {\b1}, {\i1}, etc.
+    let mut out = String::with_capacity(raw.len());
+    let mut inside_tag = false;
+
+    let text_with_newlines = raw.replace(r"\N", "\n").replace(r"\n", "\n").replace(r"\h", " ");
+
+    for c in text_with_newlines.chars() {
+        if c == '{' {
+            inside_tag = true;
+        } else if c == '}' {
+            inside_tag = false;
+        } else if !inside_tag {
+            out.push(c);
+        }
+    }
+
+    out.trim().to_string()
+}

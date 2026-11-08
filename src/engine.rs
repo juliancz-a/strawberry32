@@ -8,7 +8,6 @@ use librqbit::{
     AddTorrent, AddTorrentOptions, AddTorrentResponse, Session,
     SessionOptions,
 };
-use std::io::Read;
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Mutex, OnceLock};
@@ -37,8 +36,19 @@ static STREAM_STATUS: Mutex<StreamStatus> = Mutex::new(StreamStatus {
     error: None,
 });
 
+static CURRENT_VIDEO_HASH: Mutex<Option<(String, u64)>> = Mutex::new(None);
+static BUNDLED_SUBTITLES: Mutex<Vec<crate::subtitles::BundledSubtitle>> = Mutex::new(Vec::new());
+
 pub fn get_stream_status() -> StreamStatus {
     STREAM_STATUS.lock().unwrap().clone()
+}
+
+pub fn get_current_video_hash() -> Option<(String, u64)> {
+    CURRENT_VIDEO_HASH.lock().unwrap().clone()
+}
+
+pub fn get_bundled_subtitles() -> Vec<crate::subtitles::BundledSubtitle> {
+    BUNDLED_SUBTITLES.lock().unwrap().clone()
 }
 
 pub fn set_stream_loading(title: &str) {
@@ -119,6 +129,13 @@ pub fn start_engine() -> Result<(), String> {
                 log_torrent("Starting librqbit Session with low-RAM profile (Surface RT)...");
 
                 let session_opts = SessionOptions {
+                    listen_port_range: Some(42000..42010),
+                    enable_upnp_port_forwarding: true,
+                    peer_opts: Some(librqbit::PeerConnectionOptions {
+                        connect_timeout: Some(Duration::from_secs(10)),
+                        read_write_timeout: Some(Duration::from_secs(30)),
+                        ..Default::default()
+                    }),
                     disable_dht_persistence: false,
                     ..Default::default()
                 };
@@ -184,33 +201,16 @@ async fn handle_start_stream(
 ) -> Result<String, String> {
     log_torrent(&format!("Preparing stream for infoHash: {}", info_hash));
 
-    let default_trackers = [
-        "http://tracker.openbittorrent.com:80/announce",
-        "http://tracker.opentrackr.org:1337/announce",
-        "http://open.acgnxtracker.com:80/announce",
-        "http://tracker.bt4g.com:2095/announce",
-        "http://tracker.files.fm:6969/announce",
-        "http://tracker.gbitt.info:80/announce",
-        "udp://tracker.opentrackr.org:1337/announce",
-        "udp://open.stealth.si:80/announce",
-        "udp://exodus.desync.com:6969/announce",
-        "udp://tracker.torrent.eu.org:451/announce",
-        "udp://open.demonii.com:1337/announce",
-        "udp://tracker.moeking.me:6969/announce",
-        "udp://explodie.org:6969/announce",
-        "udp://tracker.coppersurfer.tk:6969/announce",
-        "udp://tracker.leechers-paradise.org:6969/announce",
-    ];
-
+    let verified_trackers = crate::trackers::get_verified_trackers();
     let mut all_trackers: Vec<String> = trackers;
-    for dt in &default_trackers {
-        if !all_trackers.iter().any(|t| t == *dt) {
-            all_trackers.push(dt.to_string());
+    for vt in &verified_trackers {
+        if !all_trackers.iter().any(|t| t == vt) {
+            all_trackers.push(vt.clone());
         }
     }
 
     log_torrent(&format!(
-        "Configuring magnet with {} trackers (HTTP + UDP)...",
+        "Configuring magnet with {} verified live trackers...",
         all_trackers.len()
     ));
 
@@ -335,88 +335,46 @@ async fn handle_start_stream(
         }
     }
 
-    // Determine target video file index, length and filename
-    let (chosen_idx, file_len, file_name) = match preferred_file_idx {
-        Some(idx) => {
-            let res = handle.with_metadata(|meta| {
-                if let Ok(details) = meta.info.iter_file_details() {
-                    for (i, fd) in details.enumerate() {
-                        if i == idx {
-                            let name = fd.filename.to_string().unwrap_or_default();
-                            return (fd.len, name);
-                        }
-                    }
-                }
-                (0u64, String::new())
-            }).unwrap_or((0u64, String::new()));
-            (idx, res.0, res.1)
+    // Enumerate all files from torrent metadata
+    let all_files: Vec<(usize, u64, String)> = handle.with_metadata(|meta| {
+        let mut list = Vec::new();
+        if let Ok(details) = meta.info.iter_file_details() {
+            for (i, fd) in details.enumerate() {
+                list.push((i, fd.len, fd.filename.to_string().unwrap_or_default()));
+            }
         }
-        None => {
-            let best = handle.with_metadata(|meta| {
-                // If this is a series episode, try to match episode token in filenames first
-                if let (Some(s), Some(e)) = (season, episode) {
-                    let pat1 = format!("s{:02}e{:02}", s, e);
-                    let pat2 = format!("s{}e{}", s, e);
-                    let pat3 = format!("{}x{:02}", s, e);
-                    let pat4 = format!("{}x{}", s, e);
+        list
+    }).unwrap_or_default();
 
-                    if let Ok(details) = meta.info.iter_file_details() {
-                        for (i, fd) in details.enumerate() {
-                            let fname = fd.filename.to_string().unwrap_or_default();
-                            let lower = fname.to_lowercase();
-                            if lower.contains(&pat1) || lower.contains(&pat2) || lower.contains(&pat3) || lower.contains(&pat4) {
-                                log_torrent(&format!("Matched series episode S{:02}E{:02} to file index {} ('{}')", s, e, i, fname));
-                                return (i, fd.len, fname);
-                            }
-                        }
-                    }
-                }
+    // Scan for bundled subtitle files (.srt, .vtt, .ass, .ssa)
+    let bundled_subs_info: Vec<(usize, String, u64)> = all_files.iter().map(|(i, len, name)| (*i, name.clone(), *len)).collect();
+    let found_bundled = crate::subtitles::find_bundled_subtitles(&bundled_subs_info);
+    *BUNDLED_SUBTITLES.lock().unwrap() = found_bundled;
 
-                let mut max_len = 0u64;
-                let mut best_idx = 0usize;
-                let mut best_name = String::new();
-
-                if let Ok(details) = meta.info.iter_file_details() {
-                    for (i, fd) in details.enumerate() {
-                        let fname = fd.filename.to_string().unwrap_or_default();
-                        let name_lower = fname.to_lowercase();
-                        let is_video = name_lower.ends_with(".mp4")
-                            || name_lower.ends_with(".mkv")
-                            || name_lower.ends_with(".avi")
-                            || name_lower.ends_with(".m4v")
-                            || name_lower.ends_with(".mov");
-
-                        if is_video && fd.len > max_len {
-                            max_len = fd.len;
-                            best_idx = i;
-                            best_name = fname;
-                        } else if fd.len > max_len {
-                            max_len = fd.len;
-                            best_idx = i;
-                            best_name = fname;
-                        }
-                    }
-                }
-                (best_idx, max_len, best_name)
-            });
-
-            match best {
-                Ok((idx, len, name)) => {
-                    log_torrent(&format!(
-                        "Selected video file index {} ({:.1} MB, '{}')",
-                        idx,
-                        len as f64 / 1_048_576.0,
-                        name
-                    ));
-                    (idx, len, name)
-                }
-                Err(e) => {
-                    log_err(&format!("Could not enumerate files: {}. Using index 0.", e));
-                    (0, 0u64, String::new())
-                }
+    // Determine target video file index, length and filename (with series season/episode matching)
+    let (chosen_idx, file_len, file_name) = match preferred_file_idx {
+        Some(idx) if idx < all_files.len() => {
+            let (i, len, name) = &all_files[idx];
+            (*i, *len, name.clone())
+        }
+        _ => {
+            let s_info = season.and_then(|s| episode.map(|e| (s, e)));
+            let idx = guess_file_index(&all_files, s_info);
+            if idx < all_files.len() {
+                let (i, len, name) = &all_files[idx];
+                (*i, *len, name.clone())
+            } else {
+                (0, 0u64, String::new())
             }
         }
     };
+
+    log_torrent(&format!(
+        "Selected video file index {} ({:.1} MB, '{}')",
+        chosen_idx,
+        file_len as f64 / 1_048_576.0,
+        file_name
+    ));
 
     // Restrict librqbit download exclusively to the target file to avoid downloading the entire pack
     let mut only_files_set = std::collections::HashSet::new();
@@ -432,89 +390,107 @@ async fn handle_start_stream(
 
     let stream_url = format!("http://127.0.0.1:3030/torrents/{}/stream/{}", torrent_id, chosen_idx);
 
-    // PART 2: SMART CONCURRENT PRE-FETCHING (Header 5 MB + Tail 2.5 MB moov atom)
-    let head_limit = (5 * 1024 * 1024).min(file_len as usize);
-    let tail_limit = (2621440usize).min(file_len as usize);
-    log_torrent(&format!(
-        "Starting smart pre-buffering (Header {:.1}MB + Tail moov {:.1}MB) for {:.1} MB file...",
-        head_limit as f64 / 1_048_576.0,
-        tail_limit as f64 / 1_048_576.0,
-        file_len as f64 / 1_048_576.0
-    ));
+    // Track active folder for protected cache cleaning
+    let active_torrent_folder = get_cache_dir().join(&file_name);
+    crate::cache_cleaner::set_active_torrent_dir(Some(active_torrent_folder));
+
+    // PART 2: SMART CONTAINER METADATA INSPECTION & TARGETED PRE-BUFFERING
+    let head_chunk_size = 65536usize.min(file_len as usize);
+    let url_head = stream_url.clone();
+    let head_range_hdr = format!("bytes=0-{}", head_chunk_size.saturating_sub(1));
+    let head_handle = tokio::task::spawn_blocking(move || -> Vec<u8> {
+        let client = ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(10))
+            .timeout_read(Duration::from_secs(60))
+            .build();
+        if let Ok(resp) = client.get(&url_head).set("Range", &head_range_hdr).call() {
+            let mut reader = resp.into_reader();
+            let mut buf = Vec::with_capacity(head_chunk_size);
+            let _ = std::io::copy(&mut reader, &mut buf);
+            buf
+        } else {
+            Vec::new()
+        }
+    });
+
+    let tail_chunk_size = 65536u64.min(file_len);
+    let tail_start = file_len.saturating_sub(tail_chunk_size);
+    let url_tail = stream_url.clone();
+    let tail_range_hdr = format!("bytes={}-{}", tail_start, file_len.saturating_sub(1));
+    let tail_handle = tokio::task::spawn_blocking(move || -> Vec<u8> {
+        let client = ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(10))
+            .timeout_read(Duration::from_secs(60))
+            .build();
+        if let Ok(resp) = client.get(&url_tail).set("Range", &tail_range_hdr).call() {
+            let mut reader = resp.into_reader();
+            let mut buf = Vec::with_capacity(tail_chunk_size as usize);
+            let _ = std::io::copy(&mut reader, &mut buf);
+            buf
+        } else {
+            Vec::new()
+        }
+    });
 
     let ttfb_timer = std::time::Instant::now();
-
-    // 1. Header request: 0 to head_limit bytes (5 MB)
-    let url_head = stream_url.clone();
-    let head_range = format!("bytes=0-{}", head_limit.saturating_sub(1));
-    let head_handle = tokio::task::spawn_blocking(move || {
-        let client = ureq::AgentBuilder::new()
-            .timeout_connect(Duration::from_secs(10))
-            .timeout_read(Duration::from_secs(60))
-            .build();
-        let resp = client.get(&url_head).set("Range", &head_range).call();
-        match resp {
-            Ok(r) => {
-                let mut reader = r.into_reader();
-                let mut buf = [0u8; 65536];
-                let mut total = 0usize;
-                while total < head_limit {
-                    match reader.read(&mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => total += n,
-                        Err(e) => return Err(e.to_string()),
-                    }
-                }
-                Ok(total)
-            }
-            Err(e) => Err(e.to_string()),
-        }
-    });
-
-    // 2. Tail request: last 2.5 MB (where MP4 moov atom / seek table resides)
-    let url_tail = stream_url.clone();
-    let tail_handle = tokio::task::spawn_blocking(move || {
-        if file_len <= (head_limit as u64) {
-            return Ok(0usize);
-        }
-        let tail_start = file_len.saturating_sub(tail_limit as u64);
-        let tail_end = file_len.saturating_sub(1);
-        let range_val = format!("bytes={}-{}", tail_start, tail_end);
-
-        let client = ureq::AgentBuilder::new()
-            .timeout_connect(Duration::from_secs(10))
-            .timeout_read(Duration::from_secs(60))
-            .build();
-        let resp = client.get(&url_tail).set("Range", &range_val).call();
-        match resp {
-            Ok(r) => {
-                let mut reader = r.into_reader();
-                let mut buf = [0u8; 65536];
-                let mut total = 0usize;
-                while total < tail_limit {
-                    match reader.read(&mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => total += n,
-                        Err(e) => return Err(e.to_string()),
-                    }
-                }
-                Ok(total)
-            }
-            Err(e) => Err(e.to_string()),
-        }
-    });
-
-    // Wait for both pre-fetches to complete or timeout
     let (head_res, tail_res) = tokio::join!(head_handle, tail_handle);
+    let head_bytes = head_res.unwrap_or_default();
+    let tail_bytes = tail_res.unwrap_or_default();
+
+    // Frame-accurate OpenSubtitles hash
+    if !head_bytes.is_empty() && !tail_bytes.is_empty() {
+        let opensub_hash = crate::subtitles::calculate_opensub_hash(file_len, &head_bytes, &tail_bytes);
+        log_info(&format!("Computed OpenSubtitles videoHash: {} for size: {}", opensub_hash, file_len));
+        *CURRENT_VIDEO_HASH.lock().unwrap() = Some((opensub_hash, file_len));
+    }
+
+    // Inspect container metadata
+    let mut cursor = std::io::Cursor::new(head_bytes.clone());
+    let meta = crate::container_meta::MetadataInspector::get_or_inspect(
+        info_hash,
+        chosen_idx,
+        &file_name,
+        file_len,
+        &mut cursor,
+    ).await;
+
+    // Targeted atom pre-fetching:
+    if let Some((moov_offset, moov_size)) = meta.moov_range {
+        if moov_offset > (head_chunk_size as u64) {
+            log_torrent(&format!(
+                "Pre-fetching exact tail 'moov' atom at {} ({} KB)...",
+                moov_offset, moov_size / 1024
+            ));
+            let url_moov = stream_url.clone();
+            let moov_range_hdr = format!("bytes={}-{}", moov_offset, (moov_offset + moov_size).saturating_sub(1));
+            let _ = tokio::task::spawn_blocking(move || {
+                let client = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(10)).build();
+                let _ = client.get(&url_moov).set("Range", &moov_range_hdr).call();
+            }).await;
+        }
+    } else if let Some(cues_offset) = meta.cues_offset {
+        log_torrent(&format!("Pre-fetching MKV Cues index at {} (500 KB)...", cues_offset));
+        let url_cues = stream_url.clone();
+        let cues_range_hdr = format!("bytes={}-{}", cues_offset, (cues_offset + 500_000).min(file_len).saturating_sub(1));
+        let _ = tokio::task::spawn_blocking(move || {
+            let client = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(10)).build();
+            let _ = client.get(&url_cues).set("Range", &cues_range_hdr).call();
+        }).await;
+    }
+
+    // Buffer initial playback segment (4 MB) for smooth player start
+    let init_play_size = (4 * 1024 * 1024).min(file_len as usize);
+    let url_play = stream_url.clone();
+    let play_range_hdr = format!("bytes=0-{}", init_play_size.saturating_sub(1));
+    let _ = tokio::task::spawn_blocking(move || {
+        let client = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(10)).build();
+        let _ = client.get(&url_play).set("Range", &play_range_hdr).call();
+    }).await;
+
     let ttfb_ms = ttfb_timer.elapsed().as_millis();
-
-    let head_bytes = head_res.unwrap_or(Ok(0)).unwrap_or(0);
-    let tail_bytes = tail_res.unwrap_or(Ok(0)).unwrap_or(0);
-    let total_buffered_mb = (head_bytes + tail_bytes) as f64 / 1_048_576.0;
-
     log_torrent(&format!(
-        "[TORRENT] TTFB: {} ms | MP4 header and tail buffered ({:.2} MB ready). Ready for player.",
-        ttfb_ms, total_buffered_mb
+        "[TORRENT] TTFB: {} ms | Container metadata inspected & pre-buffered. Ready for player.",
+        ttfb_ms
     ));
 
     // Mark stream status ready
@@ -522,7 +498,7 @@ async fn handle_start_stream(
         let mut guard = STREAM_STATUS.lock().unwrap();
         guard.is_loading = false;
         guard.message = "Ready".to_string();
-        guard.progress_mb = total_buffered_mb;
+        guard.progress_mb = 4.0;
     }
 
     // Return the local remux/proxy URL with explicit .mp4 extension for Windows RT Media Foundation
@@ -608,4 +584,60 @@ pub fn clear_cache() -> Result<usize, String> {
     resp_rx
         .recv()
         .map_err(|e| format!("Did not receive response from engine: {}", e))?
+}
+
+/// Matches series episodes using SxxExx and NxN patterns against video files,
+/// falling back to the largest video file.
+pub fn guess_file_index(
+    files: &[(usize, u64, String)],
+    series_info: Option<(u32, u32)>,
+) -> usize {
+    let video_extensions = [
+        ".mp4", ".mkv", ".avi", ".m4v", ".mov", ".ts", ".webm", ".wmv",
+    ];
+
+    let mut media_files: Vec<(usize, u64, String)> = Vec::new();
+    for (idx, length, filename) in files {
+        let lower = filename.to_lowercase();
+        if video_extensions.iter().any(|ext| lower.ends_with(ext)) {
+            media_files.push((*idx, *length, lower));
+        }
+    }
+
+    if media_files.is_empty() {
+        return files.iter().max_by_key(|(_, len, _)| *len).map(|(idx, _, _)| *idx).unwrap_or(0);
+    }
+
+    if let Some((season, episode)) = series_info {
+        let re_sxe = regex::Regex::new(r"[sS](\d+)[eE](\d+)").unwrap();
+        let re_xx = regex::Regex::new(r"(\d+)x(\d+)").unwrap();
+
+        let mut candidates = Vec::new();
+        for (idx, length, filename) in &media_files {
+            let mut found_s = None;
+            let mut found_e = None;
+
+            if let Some(caps) = re_sxe.captures(filename) {
+                found_s = caps.get(1).and_then(|m| m.as_str().parse::<u32>().ok());
+                found_e = caps.get(2).and_then(|m| m.as_str().parse::<u32>().ok());
+            } else if let Some(caps) = re_xx.captures(filename) {
+                found_s = caps.get(1).and_then(|m| m.as_str().parse::<u32>().ok());
+                found_e = caps.get(2).and_then(|m| m.as_str().parse::<u32>().ok());
+            }
+
+            if found_s == Some(season) && found_e == Some(episode) {
+                candidates.push((*idx, *length));
+            }
+        }
+
+        if let Some((best_idx, _)) = candidates.into_iter().max_by_key(|&(_, len)| len) {
+            return best_idx;
+        }
+    }
+
+    media_files
+        .into_iter()
+        .max_by_key(|&(_, len, _)| len)
+        .map(|(idx, _, _)| idx)
+        .unwrap_or(0)
 }

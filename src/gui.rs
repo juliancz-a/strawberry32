@@ -1077,10 +1077,33 @@ pub fn run_app() -> Result<(), String> {
                 let sub_type = ui_detail_type.clone();
                 let sub_id = ui_detail_id.clone();
                 std::thread::spawn(move || {
-                    let tracks = subtitles::fetch_subtitle_tracks(&sub_type, &sub_id, Some(ui_season), Some(ui_episode)).unwrap_or_default();
+                    let (v_hash, v_size) = crate::engine::get_current_video_hash()
+                        .map(|(h, s)| (Some(h), Some(s)))
+                        .unwrap_or((None, None));
+
+                    let mut tracks = subtitles::fetch_subtitle_tracks(
+                        &sub_type,
+                        &sub_id,
+                        Some(ui_season),
+                        Some(ui_episode),
+                        v_hash.as_deref(),
+                        v_size,
+                    ).unwrap_or_default();
+
+                    // Inject bundled torrent subtitles if found
+                    let bundled = crate::engine::get_bundled_subtitles();
+                    for b in bundled {
+                        let local_url = format!("http://127.0.0.1:3030/torrents/0/stream/{}", b.file_idx);
+                        tracks.insert(0, state::SubtitleTrack {
+                            id: format!("bundled_{}", b.file_idx),
+                            lang: format!("{} [Torrent]", b.lang),
+                            url: local_url,
+                        });
+                    }
+
                     *SUBTITLE_TRACKS.lock().unwrap() = tracks.clone();
                     if let Some(first) = tracks.first() {
-                        if let Ok(entries) = subtitles::download_and_parse_srt(&first.url) {
+                        if let Ok(entries) = subtitles::download_and_parse_subtitle(&first.url) {
                             subtitles::set_active_subtitles(entries, &first.lang);
                             log_player(&format!("Auto-loaded subtitle track: {}", first.lang));
                         }
@@ -1491,7 +1514,7 @@ pub fn run_app() -> Result<(), String> {
         } else if let Some(track) = tracks.get(curr_idx) {
             let track_clone = track.clone();
             std::thread::spawn(move || {
-                if let Ok(entries) = subtitles::download_and_parse_srt(&track_clone.url) {
+                if let Ok(entries) = subtitles::download_and_parse_subtitle(&track_clone.url) {
                     subtitles::set_active_subtitles(entries, &track_clone.lang);
                     log_player(&format!("Subtitle activated: {}", track_clone.lang));
                 }

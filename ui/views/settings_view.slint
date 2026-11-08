@@ -9,8 +9,124 @@ export struct AddonItem {
     enabled: bool,
 }
 
+// Slint Software-Renderer friendly iOS/macOS styled Toggle switch
+component Toggle inherits Rectangle {
+    in-out property <bool> checked;
+    callback toggled(bool);
+
+    width: 44px;
+    height: 24px;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: root.checked ? Theme.accent : #3a3c42;
+    background: root.checked ? Theme.accent : #222328;
+    animate background, border-color { duration: 140ms; }
+
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.checked = !root.checked;
+            root.toggled(root.checked);
+        }
+    }
+
+    Rectangle {
+        width: 18px;
+        height: 18px;
+        border-radius: 9px;
+        background: #ffffff;
+        y: (parent.height - self.height) / 2;
+        x: root.checked ? parent.width - self.width - 3px : 3px;
+        animate x { duration: 140ms; easing: ease-in-out; }
+    }
+}
+
+// Compact settings row: label (+ optional description) on the left, Toggle on the right
+component ToggleRow inherits Rectangle {
+    in property <string> label;
+    in property <string> description;
+    in-out property <bool> checked;
+    callback toggled(bool);
+
+    height: root.description != "" ? 56px : 42px;
+    background: Theme.surface-raised;
+    border-radius: 6px;
+
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        alignment: space-between;
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            Text {
+                text: root.label;
+                font-size: 13px;
+                font-weight: 700;
+                color: Theme.text;
+                vertical-alignment: center;
+            }
+            if root.description != "" : Text {
+                text: root.description;
+                font-size: 11px;
+                color: Theme.text-muted;
+                vertical-alignment: center;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            Toggle {
+                checked <=> root.checked;
+                toggled(val) => { root.toggled(val); }
+            }
+        }
+    }
+}
+
+// Compact settings row: label (+ optional description) on the left, control on the right
+component FieldRow inherits Rectangle {
+    in property <string> label;
+    in property <string> description;
+
+    height: root.description != "" ? 66px : 46px;
+    background: Theme.surface-raised;
+    border-radius: 6px;
+
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        alignment: space-between;
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            Text {
+                text: root.label;
+                font-size: 13px;
+                font-weight: 700;
+                color: Theme.text;
+                vertical-alignment: center;
+            }
+            if root.description != "" : Text {
+                text: root.description;
+                font-size: 11px;
+                color: Theme.text-muted;
+                vertical-alignment: center;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            @children
+        }
+    }
+}
+
 component SettingsTabButton inherits Rectangle {
     in property <string> label: "";
+    in property <image> icon;
     in property <bool> is_active: false;
     callback clicked();
 
@@ -36,7 +152,16 @@ component SettingsTabButton inherits Rectangle {
     HorizontalLayout {
         padding-left: 14px;
         padding-right: 14px;
+        spacing: 10px;
         alignment: start;
+
+        if root.icon.width > 0 : Image {
+            source: root.icon;
+            width: 16px;
+            height: 16px;
+            colorize: root.is_active ? Theme.accent : Theme.text-muted;
+            vertical-alignment: center;
+        }
 
         Text {
             text: root.label;
@@ -137,7 +262,7 @@ export component SettingsView inherits Rectangle {
 
         // Left Navigation Column (Categories)
         Rectangle {
-            width: 200px;
+            width: 210px;
             background: Theme.surface;
             border-radius: 8px;
             border-width: 1px;
@@ -157,37 +282,43 @@ export component SettingsView inherits Rectangle {
                 Rectangle { height: 8px; }
 
                 SettingsTabButton {
-                    label: "🧩 Add-ons";
+                    label: "Add-ons Manager";
+                    icon: @image-url("../icons/shield.svg");
                     is_active: root.active_tab == 0;
                     clicked => { root.active_tab = 0; root.tab_changed(0); }
                 }
 
                 SettingsTabButton {
-                    label: "▶ Playback";
+                    label: "Playback";
+                    icon: @image-url("../icons/sliders-horizontal.svg");
                     is_active: root.active_tab == 1;
                     clicked => { root.active_tab = 1; root.tab_changed(1); }
                 }
 
                 SettingsTabButton {
-                    label: "💾 Streaming & Cache";
+                    label: "Streaming & Cache";
+                    icon: @image-url("../icons/server.svg");
                     is_active: root.active_tab == 2;
                     clicked => { root.active_tab = 2; root.tab_changed(2); }
                 }
 
                 SettingsTabButton {
-                    label: "🎨 Interface";
+                    label: "Interface";
+                    icon: @image-url("../icons/globe.svg");
                     is_active: root.active_tab == 3;
                     clicked => { root.active_tab = 3; root.tab_changed(3); }
                 }
 
                 SettingsTabButton {
-                    label: "⚡ Diagnostics & Logs";
+                    label: "Diagnostics & Logs";
+                    icon: @image-url("../icons/scroll-text.svg");
                     is_active: root.active_tab == 4;
                     clicked => { root.active_tab = 4; root.tab_changed(4); }
                 }
 
                 SettingsTabButton {
-                    label: "ℹ️ About Strawberry32";
+                    label: "About Strawberry32";
+                    icon: @image-url("../icons/refresh-cw.svg");
                     is_active: root.active_tab == 5;
                     clicked => { root.active_tab = 5; root.tab_changed(5); }
                 }
@@ -234,99 +365,105 @@ export component SettingsView inherits Rectangle {
                                 LineEdit {
                                     placeholder-text: "Paste manifest URL (e.g. https://... or stremio://...)";
                                     text <=> root.install_url_input;
-                                    horizontal-stretch: 1;
+                                    accepted => {
+                                        root.install_addon_clicked(root.install_url_input);
+                                    }
                                 }
 
                                 Button {
                                     text: "Install Add-on";
                                     clicked => {
-                                        if (root.install_url_input != "") {
-                                            root.install_addon_clicked(root.install_url_input);
-                                            root.install_url_input = "";
-                                        }
+                                        root.install_addon_clicked(root.install_url_input);
                                     }
                                 }
 
                                 Button {
-                                    text: "⚡ Quick Setup";
-                                    clicked => { root.quick_setup_clicked(); }
+                                    text: "Quick Setup (Cinemeta + Torrentio)";
+                                    clicked => {
+                                        root.quick_setup_clicked();
+                                    }
                                 }
                             }
                         }
 
-                        Text {
-                            text: "Installed Add-ons (" + root.addon_items.length + "):";
-                            font-size: 13px;
-                            font-weight: 700;
-                            color: Theme.accent;
-                        }
-
+                        // Installed Add-ons List
                         for addon in root.addon_items : Rectangle {
-                            height: 64px;
-                            background: #1c1d20;
+                            background: Theme.surface-raised;
                             border-radius: 6px;
-                            border-width: 1px;
-                            border-color: #2e3034;
 
-                            HorizontalLayout {
-                                padding-left: 14px;
-                                padding-right: 14px;
-                                spacing: 12px;
-                                alignment: space-between;
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 6px;
 
-                                VerticalLayout {
-                                    alignment: center;
-                                    spacing: 3px;
+                                HorizontalLayout {
+                                    alignment: space-between;
 
                                     HorizontalLayout {
                                         spacing: 8px;
+                                        alignment: center;
+
                                         Text {
                                             text: addon.name;
                                             font-size: 14px;
                                             font-weight: 700;
                                             color: Theme.text;
+                                            vertical-alignment: center;
                                         }
+
                                         Text {
                                             text: "v" + addon.version;
                                             font-size: 11px;
                                             color: Theme.text-muted;
                                             vertical-alignment: center;
                                         }
+
+                                        Rectangle {
+                                            width: addon.enabled ? 54px : 58px;
+                                            height: 20px;
+                                            background: addon.enabled ? #164024 : #3a2024;
+                                            border-radius: 4px;
+                                            Text {
+                                                text: addon.enabled ? "ACTIVE" : "DISABLED";
+                                                font-size: 10px;
+                                                font-weight: 800;
+                                                color: addon.enabled ? #3ddc84 : #ff5555;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
                                     }
 
-                                    Text {
-                                        text: addon.description != "" ? addon.description : "Community add-on";
-                                        font-size: 11px;
-                                        color: Theme.text-muted;
-                                        overflow: elide;
-                                        max-width: 480px;
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        alignment: center;
+
+                                        Button {
+                                            text: "▲";
+                                            clicked => { root.priority_addon_clicked(addon.id, true); }
+                                        }
+
+                                        Button {
+                                            text: "▼";
+                                            clicked => { root.priority_addon_clicked(addon.id, false); }
+                                        }
+
+                                        Button {
+                                            text: addon.enabled ? "Disable" : "Enable";
+                                            clicked => { root.toggle_addon_clicked(addon.id); }
+                                        }
+
+                                        Button {
+                                            text: "Remove";
+                                            clicked => { root.remove_addon_clicked(addon.id); }
+                                        }
                                     }
                                 }
 
-                                HorizontalLayout {
-                                    spacing: 8px;
-                                    alignment: center;
-
-                                    ChipButton {
-                                        text: addon.enabled ? "Enabled ✓" : "Disabled";
-                                        is_active: addon.enabled;
-                                        clicked => { root.toggle_addon_clicked(addon.id); }
-                                    }
-
-                                    ChipButton {
-                                        text: "▲";
-                                        clicked => { root.priority_addon_clicked(addon.id, true); }
-                                    }
-
-                                    ChipButton {
-                                        text: "▼";
-                                        clicked => { root.priority_addon_clicked(addon.id, false); }
-                                    }
-
-                                    Button {
-                                        text: "Remove";
-                                        clicked => { root.remove_addon_clicked(addon.id); }
-                                    }
+                                Text {
+                                    text: addon.description != "" ? addon.description : "No description provided.";
+                                    font-size: 12px;
+                                    color: Theme.text-muted;
+                                    wrap: word-wrap;
                                 }
                             }
                         }
@@ -334,7 +471,7 @@ export component SettingsView inherits Rectangle {
 
                     // TAB 1: PLAYBACK
                     if root.active_tab == 1 : VerticalLayout {
-                        spacing: 16px;
+                        spacing: 12px;
 
                         Text {
                             text: "Playback Settings";
@@ -343,112 +480,73 @@ export component SettingsView inherits Rectangle {
                             color: Theme.text;
                         }
 
-                        Text {
-                            text: "Maximum Target Video Resolution:";
-                            font-size: 13px;
-                            font-weight: 700;
-                            color: Theme.text;
+                        ToggleRow {
+                            label: "Prefer MP4 / AAC Native Streams";
+                            description: "Hardware decoded directly by Tegra 3 (zero remux overhead)";
+                            checked <=> root.prefer_mp4;
+                            toggled(val) => { root.prefer_mp4_toggled(val); }
                         }
 
-                        HorizontalLayout {
-                            spacing: 8px;
-                            alignment: start;
-
-                            ChipButton {
-                                text: "480p SD";
-                                is_active: root.max_resolution == 480;
-                                clicked => { root.max_res_changed(480); }
-                            }
-                            ChipButton {
-                                text: "720p HD (Recommended for Tegra 3)";
-                                is_active: root.max_resolution == 720;
-                                clicked => { root.max_res_changed(720); }
-                            }
-                            ChipButton {
-                                text: "1080p FHD (Experimental)";
-                                is_active: root.max_resolution == 1080;
-                                clicked => { root.max_res_changed(1080); }
-                            }
+                        ToggleRow {
+                            label: "Auto-play Next Episode";
+                            description: "Automatically start the next episode when watching a series";
+                            checked <=> root.autoplay_next;
+                            toggled(val) => { root.autoplay_next_toggled(val); }
                         }
 
-                        Text {
-                            text: "Preferred Media Container:";
-                            font-size: 13px;
-                            font-weight: 700;
-                            color: Theme.text;
-                        }
-
-                        HorizontalLayout {
-                            spacing: 8px;
-                            alignment: start;
-
-                            ChipButton {
-                                text: "MP4 Native (Zero Remux Overhead)";
-                                is_active: root.prefer_mp4;
-                                clicked => { root.prefer_mp4_toggled(true); }
-                            }
-                            ChipButton {
-                                text: "Allow MKV (Uses Remux Proxy)";
-                                is_active: !root.prefer_mp4;
-                                clicked => { root.prefer_mp4_toggled(false); }
+                        FieldRow {
+                            label: "Maximum Video Resolution";
+                            description: "720p HD recommended for Surface RT Tegra 3 CPU/GPU";
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+                                ChipButton {
+                                    text: "480p SD";
+                                    is_active: root.max_resolution == 480;
+                                    clicked => { root.max_res_changed(480); }
+                                }
+                                ChipButton {
+                                    text: "720p HD";
+                                    is_active: root.max_resolution == 720;
+                                    clicked => { root.max_res_changed(720); }
+                                }
+                                ChipButton {
+                                    text: "1080p FHD";
+                                    is_active: root.max_resolution == 1080;
+                                    clicked => { root.max_res_changed(1080); }
+                                }
                             }
                         }
 
-                        Text {
-                            text: "Default Subtitle Language:";
-                            font-size: 13px;
-                            font-weight: 700;
-                            color: Theme.text;
+                        FieldRow {
+                            label: "Default Subtitle Language";
+                            description: "Preferred language for automatic subtitle selection";
+                            HorizontalLayout {
+                                spacing: 6px;
+                                alignment: start;
+                                ChipButton { text: "English (en)"; is_active: root.sub_lang == "en"; clicked => { root.sub_lang_changed("en"); } }
+                                ChipButton { text: "Spanish (es)"; is_active: root.sub_lang == "es"; clicked => { root.sub_lang_changed("es"); } }
+                                ChipButton { text: "French (fr)"; is_active: root.sub_lang == "fr"; clicked => { root.sub_lang_changed("fr"); } }
+                                ChipButton { text: "German (de)"; is_active: root.sub_lang == "de"; clicked => { root.sub_lang_changed("de"); } }
+                            }
                         }
 
-                        HorizontalLayout {
-                            spacing: 8px;
-                            alignment: start;
-
-                            ChipButton { text: "English (en)"; is_active: root.sub_lang == "en"; clicked => { root.sub_lang_changed("en"); } }
-                            ChipButton { text: "Spanish (es)"; is_active: root.sub_lang == "es"; clicked => { root.sub_lang_changed("es"); } }
-                            ChipButton { text: "French (fr)"; is_active: root.sub_lang == "fr"; clicked => { root.sub_lang_changed("fr"); } }
-                            ChipButton { text: "German (de)"; is_active: root.sub_lang == "de"; clicked => { root.sub_lang_changed("de"); } }
-                        }
-
-                        Text {
-                            text: "Seek Button Step:";
-                            font-size: 13px;
-                            font-weight: 700;
-                            color: Theme.text;
-                        }
-
-                        HorizontalLayout {
-                            spacing: 8px;
-                            alignment: start;
-
-                            ChipButton { text: "10 seconds"; is_active: root.seek_step == 10; clicked => { root.seek_step_changed(10); } }
-                            ChipButton { text: "15 seconds"; is_active: root.seek_step == 15; clicked => { root.seek_step_changed(15); } }
-                            ChipButton { text: "30 seconds"; is_active: root.seek_step == 30; clicked => { root.seek_step_changed(30); } }
-                        }
-
-                        Text {
-                            text: "Series Playback:";
-                            font-size: 13px;
-                            font-weight: 700;
-                            color: Theme.text;
-                        }
-
-                        HorizontalLayout {
-                            spacing: 8px;
-                            alignment: start;
-
-                            ChipButton {
-                                text: root.autoplay_next ? "Auto-play Next Episode: ON" : "Auto-play Next Episode: OFF";
-                                is_active: root.autoplay_next;
-                                clicked => { root.autoplay_next_toggled(!root.autoplay_next); }
+                        FieldRow {
+                            label: "Seek Button Interval";
+                            description: "Jump duration for player transport forward / backward controls";
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+                                ChipButton { text: "10 seconds"; is_active: root.seek_step == 10; clicked => { root.seek_step_changed(10); } }
+                                ChipButton { text: "15 seconds"; is_active: root.seek_step == 15; clicked => { root.seek_step_changed(15); } }
+                                ChipButton { text: "30 seconds"; is_active: root.seek_step == 30; clicked => { root.seek_step_changed(30); } }
                             }
                         }
                     }
 
                     // TAB 2: STREAMING & CACHE
                     if root.active_tab == 2 : VerticalLayout {
-                        spacing: 16px;
+                        spacing: 12px;
 
                         Text {
                             text: "Streaming & Cache Management";
@@ -457,140 +555,89 @@ export component SettingsView inherits Rectangle {
                             color: Theme.text;
                         }
 
-                        Text {
-                            text: "Maximum Torrent Disk Cache Size:";
-                            font-size: 13px;
-                            font-weight: 700;
-                            color: Theme.text;
-                        }
-
-                        HorizontalLayout {
-                            spacing: 8px;
-                            alignment: start;
-
-                            ChipButton { text: "1 GB"; is_active: root.max_cache_gb == 1; clicked => { root.max_cache_changed(1); } }
-                            ChipButton { text: "2 GB (Default)"; is_active: root.max_cache_gb == 2; clicked => { root.max_cache_changed(2); } }
-                            ChipButton { text: "5 GB"; is_active: root.max_cache_gb == 5; clicked => { root.max_cache_changed(5); } }
-                            ChipButton { text: "10 GB"; is_active: root.max_cache_gb == 10; clicked => { root.max_cache_changed(10); } }
-                        }
-
-                        // Usage info
-                        Rectangle {
-                            background: Theme.surface-raised;
-                            border-radius: 6px;
-
-                            VerticalLayout {
-                                padding: 14px;
+                        FieldRow {
+                            label: "Maximum Torrent Cache Budget";
+                            description: "Oldest torrent chunks are pruned automatically by background cleaner";
+                            HorizontalLayout {
                                 spacing: 8px;
-
-                                Text {
-                                    text: "Current Torrent Cache Usage: " + root.torrent_cache_str;
-                                    font-size: 13px;
-                                    font-weight: 700;
-                                    color: Theme.text;
-                                }
-
-                                Text {
-                                    text: "Current Image Poster Cache Usage: " + root.image_cache_str;
-                                    font-size: 13px;
-                                    font-weight: 700;
-                                    color: Theme.text;
-                                }
-
-                                HorizontalLayout {
-                                    spacing: 10px;
-                                    alignment: start;
-
-                                    Button {
-                                        text: "Clear Torrent Chunks";
-                                        clicked => { root.clear_torrent_cache_clicked(); }
-                                    }
-
-                                    Button {
-                                        text: "Clear Image Cache";
-                                        clicked => { root.clear_image_cache_clicked(); }
-                                    }
-                                }
+                                alignment: start;
+                                ChipButton { text: "1 GB"; is_active: root.max_cache_gb == 1; clicked => { root.max_cache_changed(1); } }
+                                ChipButton { text: "2 GB"; is_active: root.max_cache_gb == 2; clicked => { root.max_cache_changed(2); } }
+                                ChipButton { text: "4 GB (Recommended)"; is_active: root.max_cache_gb == 4; clicked => { root.max_cache_changed(4); } }
+                                ChipButton { text: "8 GB"; is_active: root.max_cache_gb == 8; clicked => { root.max_cache_changed(8); } }
                             }
                         }
 
-                        Text {
-                            text: "Torrent Retention Policy:";
-                            font-size: 13px;
-                            font-weight: 700;
-                            color: Theme.text;
+                        ToggleRow {
+                            label: "Keep Torrents After Playback";
+                            description: "Prevents downloaded chunks from being removed upon application exit";
+                            checked <=> root.keep_after_playback;
+                            toggled(val) => { root.keep_playback_toggled(val); }
                         }
 
-                        HorizontalLayout {
-                            spacing: 8px;
-                            alignment: start;
+                        FieldRow {
+                            label: "Torrent Storage Usage";
+                            description: root.torrent_cache_str;
+                            Button {
+                                text: "Clear Torrent Chunks";
+                                clicked => { root.clear_torrent_cache_clicked(); }
+                            }
+                        }
 
-                            ChipButton {
-                                text: root.keep_after_playback ? "Keep Data After Playback: ON" : "Auto-Delete Torrent After Playback: ON";
-                                is_active: !root.keep_after_playback;
-                                clicked => { root.keep_playback_toggled(!root.keep_after_playback); }
+                        FieldRow {
+                            label: "Poster Image LRU Disk Cache";
+                            description: root.image_cache_str;
+                            Button {
+                                text: "Clear Poster Cache";
+                                clicked => { root.clear_image_cache_clicked(); }
                             }
                         }
                     }
 
                     // TAB 3: INTERFACE
                     if root.active_tab == 3 : VerticalLayout {
-                        spacing: 16px;
+                        spacing: 12px;
 
                         Text {
-                            text: "Interface & Animation Settings";
+                            text: "Interface & Appearance";
                             font-size: 18px;
                             font-weight: 800;
                             color: Theme.text;
                         }
 
-                        Text {
-                            text: "Tegra 3 Performance Optimizations:";
-                            font-size: 13px;
-                            font-weight: 700;
-                            color: Theme.text;
+                        ToggleRow {
+                            label: "Reduce Animations";
+                            description: "Disables smooth UI transitions to save Surface RT CPU and battery";
+                            checked <=> root.reduce_animations;
+                            toggled(val) => { root.reduce_anim_toggled(val); }
                         }
 
-                        HorizontalLayout {
-                            spacing: 8px;
-                            alignment: start;
+                        ToggleRow {
+                            label: "Hero Banner Auto-Rotation";
+                            description: "Cycles through featured catalog items automatically every 12s";
+                            checked <=> root.hero_autorotate;
+                            toggled(val) => { root.hero_rotate_toggled(val); }
+                        }
 
-                            ChipButton {
-                                text: root.reduce_animations ? "Reduce Animations: ON (Saves CPU)" : "Reduce Animations: OFF";
-                                is_active: root.reduce_animations;
-                                clicked => { root.reduce_anim_toggled(!root.reduce_animations); }
+                        FieldRow {
+                            label: "Catalog Card Sizing";
+                            description: "Controls poster density in catalog grids";
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+                                ChipButton { text: "Compact"; is_active: root.card_size == "s"; clicked => { root.card_size_changed("s"); } }
+                                ChipButton { text: "Standard"; is_active: root.card_size == "m"; clicked => { root.card_size_changed("m"); } }
+                                ChipButton { text: "Large"; is_active: root.card_size == "l"; clicked => { root.card_size_changed("l"); } }
                             }
-
-                            ChipButton {
-                                text: root.hero_autorotate ? "Hero Auto-Rotate: ON" : "Hero Auto-Rotate: OFF";
-                                is_active: root.hero_autorotate;
-                                clicked => { root.hero_rotate_toggled(!root.hero_autorotate); }
-                            }
-                        }
-
-                        Text {
-                            text: "Catalog Poster Card Size:";
-                            font-size: 13px;
-                            font-weight: 700;
-                            color: Theme.text;
-                        }
-
-                        HorizontalLayout {
-                            spacing: 8px;
-                            alignment: start;
-
-                            ChipButton { text: "Small (120px)"; is_active: root.card_size == "s"; clicked => { root.card_size_changed("s"); } }
-                            ChipButton { text: "Medium (146px - Default)"; is_active: root.card_size == "m"; clicked => { root.card_size_changed("m"); } }
-                            ChipButton { text: "Large (180px)"; is_active: root.card_size == "l"; clicked => { root.card_size_changed("l"); } }
                         }
                     }
 
                     // TAB 4: DIAGNOSTICS & LOGS
                     if root.active_tab == 4 : VerticalLayout {
-                        spacing: 14px;
+                        spacing: 12px;
 
                         Text {
-                            text: "System Telemetry & Live Diagnostics";
+                            text: "System Diagnostics & Live Logs";
                             font-size: 18px;
                             font-weight: 800;
                             color: Theme.text;
@@ -673,46 +720,38 @@ export component SettingsView inherits Rectangle {
                                 spacing: 8px;
 
                                 Text {
-                                    text: "Strawberry32 — Windows RT 8.1 ARM32 Edition";
-                                    font-size: 14px;
+                                    text: "Strawberry32 • Modern Streaming Client for Windows RT 8.1";
+                                    font-size: 15px;
                                     font-weight: 800;
                                     color: Theme.accent;
                                 }
+
                                 Text {
-                                    text: "Version: 0.1.0 • Built with Rust and Slint Software Renderer";
-                                    font-size: 12px;
-                                    color: Theme.text;
-                                }
-                                Text {
-                                    text: "Target Architecture: ARMv7-A (thumbv7a-pc-windows-msvc) for NVIDIA Tegra 3 (Surface RT)";
+                                    text: "Engineered specifically for the original Microsoft Surface RT (NVIDIA Tegra 3, ARM Cortex-A9 @ 1.3 GHz, 2 GB RAM) and Windows RT 8.1.";
                                     font-size: 12px;
                                     color: Theme.text-muted;
+                                    wrap: word-wrap;
                                 }
+
                                 Text {
-                                    text: "Hardware Decoders: DirectShow / Media Foundation DXVA2 Hardware H.264 Acceleration";
+                                    text: "Key Technologies & Optimizations:\n• Pure Rust streaming engine (librqbit 8.0) with BEP 15 tracker RTT probing\n• MP4 moov & MKV Cues metadata inspector with frame-accurate OpenSubtitles videoHash\n• Media Foundation IMFMediaEngine hardware DXVA2 H.264 decoding\n• Slint pure-software software renderer with Win32 SetWindowRgn zero-overhead overlay\n• Protected LRU disk cache cleaner with configurable 4 GB budget";
                                     font-size: 12px;
-                                    color: Theme.ok;
+                                    color: Theme.text;
+                                    wrap: word-wrap;
+                                }
+
+                                Rectangle { height: 4px; }
+
+                                Text {
+                                    text: "Version 0.1.0 • Built with Rust and Slint";
+                                    font-size: 11px;
+                                    color: Theme.text-faint;
                                 }
                             }
                         }
-
-                        Text {
-                            text: "Open Source Libraries & Protocols:";
-                            font-size: 13px;
-                            font-weight: 700;
-                            color: Theme.text;
-                        }
-                        Text {
-                            text: "• Slint UI Framework (slint.dev)\n• librqbit Pure-Rust BitTorrent Engine\n• Stremio Addon Protocol v3\n• Cinemeta & OpenSubtitles\n• Windows Media Foundation (MFPlay)";
-                            font-size: 12px;
-                            color: Theme.text-muted;
-                        }
                     }
-
-                    Rectangle {}
                 }
             }
         }
     }
 }
-

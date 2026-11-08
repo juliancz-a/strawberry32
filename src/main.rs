@@ -1,10 +1,13 @@
 mod addons;
+mod cache_cleaner;
+mod container_meta;
 mod engine;
 mod gui;
 mod logger;
 mod player;
 mod state;
 mod subtitles;
+mod trackers;
 mod ui;
 
 use logger::{log_err, log_info};
@@ -53,7 +56,13 @@ fn main() {
         log_err(&format!("Critical error starting librqbit engine: {}", e));
     }
 
-    // 4. Launch Slint native user interface
+    // 4. Initialize live tracker manager (24h RTT probe & cache)
+    trackers::init_tracker_manager();
+
+    // 5. Start protected LRU disk cache cleaner
+    cache_cleaner::start_cache_cleaner();
+
+    // 6. Launch Slint native user interface
     log_info("Launching native Slint user interface...");
     if let Err(e) = gui::run_app() {
         log_err(&format!("Error in Slint UI event loop: {}", e));

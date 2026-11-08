@@ -5219,6 +5219,7 @@ dependencies = [
  "librqbit",
  "native-tls",
  "raw-window-handle",
+ "regex",
  "serde",
  "serde_json",
  "slint",
