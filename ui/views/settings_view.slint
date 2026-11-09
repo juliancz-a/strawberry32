@@ -577,6 +577,20 @@ export component SettingsView inherits Rectangle {
                         }
 
                         FieldRow {
+                            label: "Default Audio Language";
+                            description: "Preferred audio track or dub language when available";
+                            HorizontalLayout {
+                                spacing: 6px;
+                                alignment: start;
+                                ChipButton { text: "English"; is_active: root.audio_lang == "eng" || root.audio_lang == "en"; clicked => { root.audio_lang_changed("eng"); } }
+                                ChipButton { text: "Spanish"; is_active: root.audio_lang == "spa" || root.audio_lang == "es"; clicked => { root.audio_lang_changed("spa"); } }
+                                ChipButton { text: "Portuguese"; is_active: root.audio_lang == "por" || root.audio_lang == "pt"; clicked => { root.audio_lang_changed("por"); } }
+                                ChipButton { text: "French"; is_active: root.audio_lang == "fre" || root.audio_lang == "fr"; clicked => { root.audio_lang_changed("fre"); } }
+                                ChipButton { text: "Japanese"; is_active: root.audio_lang == "jpn" || root.audio_lang == "ja"; clicked => { root.audio_lang_changed("jpn"); } }
+                            }
+                        }
+
+                        FieldRow {
                             label: "Default Subtitle Language";
                             description: "Preferred language for automatic subtitle selection";
                             HorizontalLayout {

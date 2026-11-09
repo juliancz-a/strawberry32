@@ -314,6 +314,7 @@ export component PlayerOverlay inherits Window {
     in-out property <bool> is_fullscreen: false;
     in-out property <string> subtitle_text: "";
     in-out property <float> progress: 0.0; // 0.0 to 1.0
+    in-out property <int> seek_step_s: 10;
 
     // Side Panels (0=None, 1=Subtitles, 2=Info)
     in-out property <int> active_panel: 0;
@@ -640,7 +641,7 @@ export component PlayerOverlay inherits Window {
                     if root.language_groups.length > 0 && root.selected_lang_group == "" : ScrollView {
                         width: 100%;
                         height: 100%;
-                        viewport-height: root.language_groups.length * 40px + 12px;
+                        content-height: root.language_groups.length * 40px + 12px;
 
                         VerticalLayout {
                             alignment: start;
@@ -788,7 +789,7 @@ export component PlayerOverlay inherits Window {
                         ScrollView {
                             width: 100%;
                             height: 143px;
-                            viewport-height: root.visible_subtitles.length * 40px + 12px;
+                            content-height: root.visible_subtitles.length * 40px + 12px;
 
                             VerticalLayout {
                                 alignment: start;
@@ -1133,10 +1134,10 @@ export component PlayerOverlay inherits Window {
 
                     PlayerIconBtn {
                         icon_type: "rewind";
-                        text_label: "10s";
+                        text_label: root.seek_step_s + "s";
                         clicked => {
                             root.user_activity();
-                            root.seek_relative(-10);
+                            root.seek_relative(-root.seek_step_s);
                         }
                     }
 
@@ -1151,10 +1152,10 @@ export component PlayerOverlay inherits Window {
 
                     PlayerIconBtn {
                         icon_type: "forward";
-                        text_label: "10s";
+                        text_label: root.seek_step_s + "s";
                         clicked => {
                             root.user_activity();
-                            root.seek_relative(10);
+                            root.seek_relative(root.seek_step_s);
                         }
                     }
 

@@ -5,6 +5,7 @@ use crate::logger::{get_temp_dir, log_err, log_info, log_torrent};
 use librqbit::{
     api::Api,
     http_api::HttpApi,
+    limits::LimitsConfig,
     AddTorrent, AddTorrentOptions, AddTorrentResponse, Session,
     SessionOptions,
 };
@@ -180,6 +181,18 @@ pub fn start_engine() -> Result<(), String> {
             rt.block_on(async move {
                 log_torrent("Starting librqbit Session with low-RAM profile (Surface RT)...");
 
+                let cache_cfg = crate::state::load_settings().cache;
+                let max_conn = if cache_cfg.max_connections > 0 { cache_cfg.max_connections } else { cache_cfg.max_peers };
+                let ratelimits = LimitsConfig {
+                    download_bps: if cache_cfg.download_limit_kbps > 0 {
+                        std::num::NonZeroU32::new(cache_cfg.download_limit_kbps.saturating_mul(1024))
+                    } else {
+                        None
+                    },
+                    upload_bps: None,
+                };
+                log_torrent(&format!("[CACHE_CONFIG] Applied torrent limits: max_connections={}, download_limit_kbps={}", max_conn, cache_cfg.download_limit_kbps));
+
                 let session_opts = SessionOptions {
                     listen_port_range: Some(42000..42010),
                     enable_upnp_port_forwarding: true,
@@ -189,6 +202,7 @@ pub fn start_engine() -> Result<(), String> {
                         ..Default::default()
                     }),
                     disable_dht_persistence: false,
+                    ratelimits: ratelimits.clone(),
                     ..Default::default()
                 };
 
@@ -283,10 +297,23 @@ async fn handle_start_stream(
         magnet.push_str(&encoded_tr);
     }
 
+    let cache_cfg = crate::state::load_settings().cache;
+    let max_conn = if cache_cfg.max_connections > 0 { cache_cfg.max_connections } else { cache_cfg.max_peers };
+    let ratelimits = LimitsConfig {
+        download_bps: if cache_cfg.download_limit_kbps > 0 {
+            std::num::NonZeroU32::new(cache_cfg.download_limit_kbps.saturating_mul(1024))
+        } else {
+            None
+        },
+        upload_bps: None,
+    };
+    log_torrent(&format!("[CACHE_CONFIG] Applied torrent limits: max_connections={}, download_limit_kbps={}", max_conn, cache_cfg.download_limit_kbps));
+
     let mut add_opts = AddTorrentOptions {
         overwrite: true,
         force_tracker_interval: Some(Duration::from_secs(5)),
         trackers: Some(all_trackers.clone()),
+        ratelimits,
         ..Default::default()
     };
     if let Some(idx) = preferred_file_idx {

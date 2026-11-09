@@ -347,6 +347,7 @@ fn default_retention_back() -> u64 { 64 * 1024 * 1024 }  // 64 MB
 fn default_lookahead() -> u64 { 48 * 1024 * 1024 }       // 48 MB
 fn default_image_cache_bytes() -> u64 { 48 * 1024 * 1024 } // 48 MB
 fn default_max_peers() -> u32 { 40 }
+fn default_max_connections() -> u32 { 40 }
 fn default_version() -> u32 { 1 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -429,6 +430,10 @@ pub struct CacheSettings {
     pub image_cache_bytes: u64,
     #[serde(default = "default_max_peers")]
     pub max_peers: u32,
+    #[serde(default = "default_max_connections")]
+    pub max_connections: u32,
+    #[serde(default)]
+    pub download_limit_kbps: u32,
 }
 
 impl Default for CacheSettings {
@@ -441,6 +446,8 @@ impl Default for CacheSettings {
             lookahead_bytes: default_lookahead(),
             image_cache_bytes: default_image_cache_bytes(),
             max_peers: default_max_peers(),
+            max_connections: default_max_connections(),
+            download_limit_kbps: 0,
         }
     }
 }
@@ -524,15 +531,21 @@ fn get_dir_size_recursive(path: &Path) -> u64 {
 }
 
 pub fn get_torrent_cache_size() -> u64 {
-    let dir = get_app_storage_root().join("torrents");
+    let dir = crate::engine::get_cache_dir();
     get_dir_size_recursive(&dir)
 }
 
 pub fn clear_torrent_cache() -> std::io::Result<()> {
-    let dir = get_app_storage_root().join("torrents");
+    let _ = crate::engine::clear_cache();
+    let dir = crate::engine::get_cache_dir();
     if dir.is_dir() {
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::create_dir_all(&dir);
+    }
+    let legacy = get_app_storage_root().join("torrents");
+    if legacy.is_dir() {
+        let _ = fs::remove_dir_all(&legacy);
+        let _ = fs::create_dir_all(&legacy);
     }
     Ok(())
 }

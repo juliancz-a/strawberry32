@@ -60,7 +60,7 @@ pub fn clean_disk_cache() {
     };
 
     let torrent_cache_dir = crate::engine::get_cache_dir();
-    let image_cache_dir = get_app_storage_root().join("image_cache");
+    let image_cache_dir = get_app_storage_root().join("cache").join("images");
 
     let active_dir = ACTIVE_TORRENT_DIR.lock().unwrap().clone();
     let mut protected_paths = HashSet::new();

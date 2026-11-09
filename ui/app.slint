@@ -302,6 +302,7 @@ export component MainWindow inherits Window {
                                 title: "Popular Movies";
                                 items: root.home_row1;
                                 row_index: 0;
+                                card_size: root.settings_card_size;
                                 card_clicked(id, type) => { root.card_selected(id, type); }
                                 request_lazy_range(row, start, end) => { root.request_lazy_range(row, start, end); }
                             }
@@ -310,6 +311,7 @@ export component MainWindow inherits Window {
                                 title: "Trending Series";
                                 items: root.home_row2;
                                 row_index: 1;
+                                card_size: root.settings_card_size;
                                 card_clicked(id, type) => { root.card_selected(id, type); }
                                 request_lazy_range(row, start, end) => { root.request_lazy_range(row, start, end); }
                             }
@@ -318,6 +320,7 @@ export component MainWindow inherits Window {
                                 title: "Action & Adventure";
                                 items: root.home_row3;
                                 row_index: 2;
+                                card_size: root.settings_card_size;
                                 card_clicked(id, type) => { root.card_selected(id, type); }
                                 request_lazy_range(row, start, end) => { root.request_lazy_range(row, start, end); }
                             }
@@ -326,6 +329,7 @@ export component MainWindow inherits Window {
                                 title: "Top Sci-Fi & Fantasy";
                                 items: root.home_row4;
                                 row_index: 3;
+                                card_size: root.settings_card_size;
                                 card_clicked(id, type) => { root.card_selected(id, type); }
                                 request_lazy_range(row, start, end) => { root.request_lazy_range(row, start, end); }
                             }
@@ -334,6 +338,7 @@ export component MainWindow inherits Window {
                                 title: "Comedy Hits";
                                 items: root.home_row5;
                                 row_index: 4;
+                                card_size: root.settings_card_size;
                                 card_clicked(id, type) => { root.card_selected(id, type); }
                                 request_lazy_range(row, start, end) => { root.request_lazy_range(row, start, end); }
                             }
@@ -342,6 +347,7 @@ export component MainWindow inherits Window {
                                 title: "Crime & Drama";
                                 items: root.home_row6;
                                 row_index: 5;
+                                card_size: root.settings_card_size;
                                 card_clicked(id, type) => { root.card_selected(id, type); }
                                 request_lazy_range(row, start, end) => { root.request_lazy_range(row, start, end); }
                             }
@@ -579,6 +585,7 @@ export component MainWindow inherits Window {
                     movie_results: root.search_movie_results;
                     series_results: root.search_series_results;
                     is_searching: root.is_searching;
+                    card_size: root.settings_card_size;
 
                     search_submitted(q) => { root.search_submitted(q); }
                     filter_clicked(f) => { root.filter_clicked(f); }
@@ -589,6 +596,7 @@ export component MainWindow inherits Window {
                 // VIEW 4: LIBRARY & WATCH HISTORY VIEW
                 if root.current_view == 4 : LibraryView {
                     library_items: root.library_items;
+                    card_size: root.settings_card_size;
                     card_selected(id, type) => { root.card_selected(id, type); }
                     clear_history_clicked => { root.clear_watch_history(); }
                     explore_clicked => {

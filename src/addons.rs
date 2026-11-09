@@ -305,6 +305,11 @@ pub fn fetch_streams(
         parsed.streams.len()
     ));
 
+    let settings = crate::state::load_settings();
+    let max_height = settings.playback.max_height;
+    let prefer_mp4 = settings.playback.prefer_mp4;
+    let audio_lang = settings.playback.audio_lang.trim().to_lowercase();
+
     let mut compatible = Vec::new();
 
     for item in parsed.streams {
@@ -335,12 +340,10 @@ pub fn fetch_streams(
         let upper = raw_title.to_uppercase();
 
         // STRICT HARDWARE LIMIT REJECTION FOR TEGRA 3 (Windows RT 8.1):
-        // 1080p, 4K, HEVC/x265, 10-bit and HDR cause 100% CPU lockup and lack hardware DXVA2 decode.
+        // 4K, HEVC/x265, 10-bit and HDR cause 100% CPU lockup and lack hardware DXVA2 decode.
         let is_rejected = upper.contains("2160P")
             || upper.contains("4K")
             || upper.contains("UHD")
-            || upper.contains("1080P")
-            || upper.contains("FHD")
             || upper.contains("HEVC")
             || upper.contains("X265")
             || upper.contains("265")
@@ -357,7 +360,8 @@ pub fn fetch_streams(
             continue;
         }
 
-        let is_720p = upper.contains("720P");
+        let is_1080p = upper.contains("1080P") || upper.contains("FHD");
+        let is_720p = (upper.contains("720P") || upper.contains("HD")) && !is_1080p;
         let is_480p = upper.contains("480P");
         let is_sd = upper.contains("576P")
             || upper.contains("BDRIP")
@@ -365,13 +369,23 @@ pub fn fetch_streams(
             || upper.contains("DVDRIP")
             || upper.contains("DVD-RIP");
 
-        if !is_720p && !is_480p && !is_sd {
+        // Resolution limit filter based on settings.playback.max_height
+        if max_height < 1080 && is_1080p {
+            continue;
+        }
+        if max_height <= 480 && (is_720p || is_1080p) {
+            continue;
+        }
+
+        if !is_1080p && !is_720p && !is_480p && !is_sd {
             if !upper.contains("X264") && !upper.contains("H264") && !upper.contains("H.264") {
                 continue;
             }
         }
 
-        let quality_tag = if is_720p {
+        let quality_tag = if is_1080p {
+            "1080p"
+        } else if is_720p {
             "720p"
         } else if is_480p {
             "480p"
@@ -454,25 +468,76 @@ pub fn fetch_streams(
             || upper.contains("COLLECTION");
 
         // SURFACE RT STREAM SCORING ALGORITHM:
-        // Prioritize MP4 (DirectShow/MF native) and MKV H.264 with AAC audio (remuxable with native audio)
         let mut score: i32 = (seeders_num.min(500) as i32) * 2;
 
-        if is_mp4 {
-            score += 10000; // Heavily prioritize MP4 for 100% native Surface RT hardware decoding
+        // Container scoring based on settings.playback.prefer_mp4
+        if prefer_mp4 {
+            if is_mp4 {
+                score += 10000; // Heavily prioritize MP4 for 100% native Surface RT hardware decoding
+            } else if is_aac {
+                score += 7500;
+            } else {
+                score += 5000;
+            }
+
+            if is_aac {
+                score += 1000;
+            } else if is_ac3 || is_eac3 || is_dts {
+                score -= 300; // Demote non-native audio formats
+            }
         } else {
-            score += 2000;
+            // Equal container tier (+5000) so streams rank primarily by resolution and active seeders
+            score += 5000;
+            if is_aac {
+                score += 1500;
+            } else if is_ac3 || is_eac3 || is_dts {
+                score -= 300;
+            }
         }
 
-        if is_720p {
-            score += 3000;
+        // Resolution score based on settings.playback.max_height
+        if max_height >= 1080 {
+            if is_1080p {
+                score += 300;
+            } else if is_720p {
+                score += 200;
+            } else {
+                score += 100;
+            }
+        } else if max_height >= 720 {
+            if is_720p {
+                score += 300;
+            } else {
+                score += 100;
+            }
         } else {
-            score += 2500; // 480p / SD
+            score += 300; // 480p / SD
         }
 
-        if is_aac {
-            score += 1000;
-        } else if is_ac3 || is_eac3 || is_dts {
-            score -= 300; // Demote non-native audio formats
+        // Default Audio Language preference bonus (+500)
+        let matches_audio_lang = if audio_lang.is_empty() || audio_lang == "en" || audio_lang == "eng" {
+            upper.contains("ENG") || upper.contains("ENGLISH") || upper.contains("MULTI") || upper.contains("DUAL")
+        } else if audio_lang == "es" || audio_lang == "spa" {
+            upper.contains("ESP") || upper.contains("SPA") || upper.contains("SPANISH") || upper.contains("CASTELLANO") || upper.contains("LATINO") || upper.contains("MULTI") || upper.contains("DUAL")
+        } else if audio_lang == "por" || audio_lang == "pt" || audio_lang == "pob" {
+            upper.contains("POR") || upper.contains("PT-BR") || upper.contains("PORTUGUESE") || upper.contains("BRAZILIAN") || upper.contains("DUB") || upper.contains("MULTI") || upper.contains("DUAL")
+        } else if audio_lang == "fre" || audio_lang == "fr" {
+            upper.contains("FRE") || upper.contains("FRENCH") || upper.contains("FRANCAIS") || upper.contains("VF") || upper.contains("VFF") || upper.contains("MULTI") || upper.contains("DUAL")
+        } else if audio_lang == "jpn" || audio_lang == "ja" {
+            upper.contains("JPN") || upper.contains("JAPANESE") || upper.contains("MULTI") || upper.contains("DUAL")
+        } else if audio_lang == "ger" || audio_lang == "de" {
+            upper.contains("GER") || upper.contains("GERMAN") || upper.contains("DEUTSCH") || upper.contains("MULTI") || upper.contains("DUAL")
+        } else if audio_lang == "ita" || audio_lang == "it" {
+            upper.contains("ITA") || upper.contains("ITALIAN") || upper.contains("ITALIANO") || upper.contains("MULTI") || upper.contains("DUAL")
+        } else if audio_lang == "rus" || audio_lang == "ru" {
+            upper.contains("RUS") || upper.contains("RUSSIAN") || upper.contains("MULTI") || upper.contains("DUAL")
+        } else {
+            let code_up = audio_lang.to_uppercase();
+            upper.contains(&code_up) || upper.contains("MULTI") || upper.contains("DUAL")
+        };
+
+        if matches_audio_lang {
+            score += 500;
         }
 
         // Torrent pack adjustment: if it's a pack without specific episode file index, demote heavily

@@ -42,6 +42,10 @@ export component CatalogRow inherits VerticalLayout {
     in property <string> title: "Catalog Row";
     in property <[CatalogItem]> items: [];
     in property <int> row_index: 0;
+    in property <string> card_size: "m";
+
+    property <length> card_slot_width: root.card_size == "s" ? 126px : (root.card_size == "l" ? 172px : 148px);
+    property <length> row_height: root.card_size == "s" ? 256px : (root.card_size == "l" ? 330px : 292px);
 
     callback card_clicked(string, string);
     callback request_lazy_range(int, int, int);
@@ -67,7 +71,7 @@ export component CatalogRow inherits VerticalLayout {
             ChevronButton {
                 text: "◀";
                 clicked => {
-                    flick.content-x = min(0px, flick.content-x + 468px);
+                    flick.content-x = min(0px, flick.content-x + root.card_slot_width * 3);
                     root.request_lazy_range(root.row_index, 0, root.items.length);
                 }
             }
@@ -75,7 +79,7 @@ export component CatalogRow inherits VerticalLayout {
             ChevronButton {
                 text: "▶";
                 clicked => {
-                    flick.content-x = max(- (root.items.length * 156px - flick.width), flick.content-x - 468px);
+                    flick.content-x = max(- (root.items.length * root.card_slot_width - flick.width), flick.content-x - root.card_slot_width * 3);
                     root.request_lazy_range(root.row_index, 0, root.items.length);
                 }
             }
@@ -84,8 +88,8 @@ export component CatalogRow inherits VerticalLayout {
 
     // Scrollable Row of Poster Cards (horizontal scrolling)
     flick := Flickable {
-        height: 255px;
-        content-width: root.items.length * 156px;
+        height: root.row_height;
+        content-width: root.items.length * root.card_slot_width;
         content-height: self.height;
 
         HorizontalLayout {
@@ -98,6 +102,7 @@ export component CatalogRow inherits VerticalLayout {
                 item_type: item.item_type;
                 poster: item.poster;
                 has_poster: item.has_poster;
+                card_size: root.card_size;
 
                 clicked(id, type) => {
                     root.card_clicked(id, type);

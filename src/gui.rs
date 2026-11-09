@@ -31,6 +31,8 @@ static CATALOG_CACHE: Mutex<Option<std::collections::HashMap<String, addons::Met
 static HERO_ITEMS: Mutex<Vec<addons::MetaItem>> = Mutex::new(Vec::new());
 static CURRENT_HERO_IDX: Mutex<usize> = Mutex::new(0);
 static CURRENT_SERIES_VIDEOS: Mutex<Vec<state::MetaVideo>> = Mutex::new(Vec::new());
+static NEXT_EPISODE_TARGET: Mutex<Option<(u32, u32)>> = Mutex::new(None);
+static AUTOPLAY_TRIGGERED: Mutex<bool> = Mutex::new(false);
 
 fn cache_insert_all(items: impl IntoIterator<Item = addons::MetaItem>) {
     let mut guard = CATALOG_CACHE.lock().unwrap();
@@ -699,6 +701,7 @@ pub fn run_app() -> Result<(), String> {
         let mut s = state::load_settings();
         s.playback.seek_step_s = step as u32;
         state::save_settings(&s);
+        crate::ui::overlay::set_overlay_seek_step(step);
         if let Some(ui) = app_weak_ss.upgrade() {
             ui.set_settings_seek_step(step);
         }
@@ -1084,6 +1087,10 @@ pub fn run_app() -> Result<(), String> {
                 if let Some(ui) = app_weak2.upgrade() {
                     ui.set_is_streams_loading(false);
                     ui.set_stream_items(ModelRc::from(Rc::new(VecModel::from(stream_models))));
+                    if ui.get_current_view() == 2 && !streams.is_empty() {
+                        log_player("Autoplaying top compatible stream for episode...");
+                        ui.invoke_play_stream_clicked(0);
+                    }
                 }
             });
         });
@@ -1287,6 +1294,8 @@ pub fn run_app() -> Result<(), String> {
                                                 overlay.set_sub_delay_ms(subtitles::get_subtitle_delay_ms() as i32);
                                                 overlay.set_sub_size(1);
                                                 overlay.set_subtitles_enabled(true);
+                                                let cur_seek = state::load_settings().playback.seek_step_s as i32;
+                                                overlay.set_seek_step_s(cur_seek);
 
                                                 let (has_next, next_lbl, next_s, next_e) = if let (Some(s), Some(e)) = (stream_season, stream_episode) {
                                                     let videos = CURRENT_SERIES_VIDEOS.lock().unwrap().clone();
@@ -1300,6 +1309,13 @@ pub fn run_app() -> Result<(), String> {
                                                 };
                                                 overlay.set_has_next_episode(has_next);
                                                 overlay.set_next_episode_label(next_lbl.into());
+                                                if has_next {
+                                                    *NEXT_EPISODE_TARGET.lock().unwrap() = Some((next_s as u32, next_e as u32));
+                                                    *AUTOPLAY_TRIGGERED.lock().unwrap() = false;
+                                                } else {
+                                                    *NEXT_EPISODE_TARGET.lock().unwrap() = None;
+                                                    *AUTOPLAY_TRIGGERED.lock().unwrap() = false;
+                                                }
 
                                                 overlay.on_user_activity(move || {
                                                     crate::ui::overlay::notify_user_activity();
@@ -1568,12 +1584,14 @@ pub fn run_app() -> Result<(), String> {
     // 14. Seek Backward & Forward
     app.on_player_seek_backward(move || {
         crate::ui::overlay::notify_user_activity();
-        let _ = player::seek_relative(-15);
+        let step = state::load_settings().playback.seek_step_s as i32;
+        let _ = player::seek_relative(-step);
     });
 
     app.on_player_seek_forward(move || {
         crate::ui::overlay::notify_user_activity();
-        let _ = player::seek_relative(30);
+        let step = state::load_settings().playback.seek_step_s as i32;
+        let _ = player::seek_relative(step);
     });
 
     // 15. Fullscreen Toggle (Real Slint fullscreen)
@@ -1835,8 +1853,30 @@ pub fn run_app() -> Result<(), String> {
                     // Auto-record watch progress every 10s while actively playing
                     static WATCH_TICKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
                     let tick = WATCH_TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let (pos_ms, dur_ms, _) = player::get_playback_progress();
+                    let pos_sec = pos_ms as f64 / 1000.0;
+                    let dur_sec = dur_ms as f64 / 1000.0;
+
+                    // Autoplay Next Episode if enabled and near end of episode (dur > 30s && pos >= dur - 1s)
+                    if dur_sec > 30.0 && pos_sec >= dur_sec - 1.0 {
+                        let settings = state::load_settings();
+                        if settings.playback.autoplay_next {
+                            let mut triggered = AUTOPLAY_TRIGGERED.lock().unwrap();
+                            if !*triggered {
+                                if let Some((next_s, next_e)) = *NEXT_EPISODE_TARGET.lock().unwrap() {
+                                    *triggered = true;
+                                    log_player(&format!(
+                                        "[AUTOPLAY] Reached end of episode ({:.1}s / {:.1}s). Transitioning to S{}E{}...",
+                                        pos_sec, dur_sec, next_s, next_e
+                                    ));
+                                    let meta_id = ui.get_detail_id().to_string();
+                                    ui.invoke_fetch_episode_streams(meta_id.into(), next_s as i32, next_e as i32);
+                                }
+                            }
+                        }
+                    }
+
                     if tick % 40 == 0 && !is_paused && progress > 0.01 {
-                        let (pos_ms, dur_ms, _) = player::get_playback_progress();
                         if dur_ms > 0 {
                             let meta_id = ui.get_detail_id().to_string();
                             let itype = ui.get_detail_type().to_string();

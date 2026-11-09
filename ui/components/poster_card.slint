@@ -7,11 +7,12 @@ export component PosterCard inherits Rectangle {
     in property <string> item_type: "movie";
     in property <image> poster;
     in property <bool> has_poster: false;
+    in property <string> card_size: "m";
 
     callback clicked(string, string);
 
-    width: 146px;
-    height: 255px;
+    width: root.card_size == "s" ? 116px : (root.card_size == "l" ? 162px : 138px);
+    height: root.card_size == "s" ? 210px : (root.card_size == "l" ? 284px : 246px);
     background: touch.pressed ? Theme.surface-raised : (touch.has-hover ? Theme.surface-hover : Theme.surface);
     border-radius: 8px;
     border-width: touch.has-hover ? 2px : 1px;
@@ -30,10 +31,10 @@ export component PosterCard inherits Rectangle {
         padding: 4px;
         spacing: 6px;
 
-        // Poster image area (2:3 aspect ratio: 138px x 207px)
+        // Poster image area
         Rectangle {
-            width: 138px;
-            height: 207px;
+            width: root.card_size == "s" ? 108px : (root.card_size == "l" ? 154px : 130px);
+            height: root.card_size == "s" ? 164px : (root.card_size == "l" ? 232px : 196px);
             background: Theme.surface-raised;
             border-radius: 6px;
             clip: true;
@@ -51,13 +52,13 @@ export component PosterCard inherits Rectangle {
 
                 Text {
                     text: root.item_type == "movie" ? "🎬" : "📺";
-                    font-size: 28px;
+                    font-size: root.card_size == "s" ? 22px : 28px;
                     horizontal-alignment: center;
                 }
 
                 Text {
                     text: root.title != "" ? root.title : "...";
-                    font-size: 11px;
+                    font-size: root.card_size == "s" ? 10px : 11px;
                     color: Theme.text-muted;
                     horizontal-alignment: center;
                     overflow: elide;
@@ -73,7 +74,7 @@ export component PosterCard inherits Rectangle {
 
             Text {
                 text: root.title;
-                font-size: 12px;
+                font-size: root.card_size == "s" ? 11px : (root.card_size == "l" ? 13px : 12px);
                 font-weight: 600;
                 color: Theme.text;
                 overflow: elide;
@@ -83,7 +84,7 @@ export component PosterCard inherits Rectangle {
 
             if root.year != "" : Text {
                 text: root.year;
-                font-size: 10px;
+                font-size: root.card_size == "s" ? 9px : 10px;
                 color: Theme.text-muted;
                 vertical-alignment: center;
             }

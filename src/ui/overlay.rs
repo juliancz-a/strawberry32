@@ -602,3 +602,14 @@ pub fn set_overlay_subtitle_loading(loading: bool) {
         }
     });
 }
+
+/// Updates the seek step interval in seconds on the overlay
+pub fn set_overlay_seek_step(step: i32) {
+    OVERLAY_INSTANCE.with(|cell| {
+        if let Ok(guard) = cell.try_borrow() {
+            if let Some(ov) = guard.as_ref() {
+                ov.set_seek_step_s(step);
+            }
+        }
+    });
+}

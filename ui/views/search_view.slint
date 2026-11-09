@@ -8,6 +8,7 @@ export component SearchView inherits Rectangle {
     in property <[CatalogItem]> movie_results: [];
     in property <[CatalogItem]> series_results: [];
     in property <bool> is_searching: false;
+    in property <string> card_size: "m";
 
     callback search_submitted(string);
     callback filter_clicked(string);
@@ -186,6 +187,7 @@ export component SearchView inherits Rectangle {
                     title: "Movies (" + root.movie_results.length + " titles)";
                     items: root.movie_results;
                     row_index: 10;
+                    card_size: root.card_size;
                     card_clicked(id, type) => {
                         root.card_selected(id, type);
                     }
@@ -198,6 +200,7 @@ export component SearchView inherits Rectangle {
                     title: "Series (" + root.series_results.length + " titles)";
                     items: root.series_results;
                     row_index: 11;
+                    card_size: root.card_size;
                     card_clicked(id, type) => {
                         root.card_selected(id, type);
                     }
