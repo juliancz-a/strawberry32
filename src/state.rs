@@ -210,6 +210,8 @@ pub struct MetaDetail {
 pub struct SubtitleTrack {
     pub id: String,
     pub lang: String,
+    pub label: String,
+    pub source: String,
     pub url: String,
 }
 

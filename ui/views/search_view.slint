@@ -17,7 +17,6 @@ export component SearchView inherits Rectangle {
     background: Theme.bg;
 
     VerticalLayout {
-        alignment: start;
         padding-left: 20px;
         padding-right: 20px;
         padding-top: 16px;
@@ -27,6 +26,7 @@ export component SearchView inherits Rectangle {
         // Search Bar Row
         HorizontalLayout {
             spacing: 12px;
+            vertical-stretch: 0;
 
             search_input := LineEdit {
                 placeholder-text: "Search movies, series, anime...";
@@ -67,6 +67,7 @@ export component SearchView inherits Rectangle {
         // Filter Chips Row
         HorizontalLayout {
             spacing: 10px;
+            vertical-stretch: 0;
 
             // All Chip
             Rectangle {
@@ -140,9 +141,9 @@ export component SearchView inherits Rectangle {
 
         // Search Content / Results
         if root.is_searching : Rectangle {
+            vertical-stretch: 1;
             background: Theme.surface;
             border-radius: 8px;
-            height: 120px;
             Text {
                 text: "Searching Cinemeta & Stremio Addons...";
                 font-size: 14px;
@@ -153,9 +154,9 @@ export component SearchView inherits Rectangle {
         }
 
         if !root.is_searching && root.movie_results.length == 0 && root.series_results.length == 0 : Rectangle {
+            vertical-stretch: 1;
             background: Theme.surface;
             border-radius: 8px;
-            height: 180px;
             VerticalLayout {
                 alignment: center;
                 spacing: 8px;
@@ -176,9 +177,10 @@ export component SearchView inherits Rectangle {
         }
 
         if !root.is_searching && (root.movie_results.length > 0 || root.series_results.length > 0) : ScrollView {
+            vertical-stretch: 1;
             VerticalLayout {
-                alignment: start;
-                spacing: 16px;
+                spacing: 20px;
+                padding-bottom: 24px;
 
                 if (root.active_filter == "all" || root.active_filter == "movie") && root.movie_results.length > 0 : CatalogRow {
                     title: "Movies (" + root.movie_results.length + " titles)";

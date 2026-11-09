@@ -68,6 +68,8 @@ export component MainWindow inherits Window {
     in-out property <image> detail_poster;
     in-out property <image> detail_backdrop;
     in-out property <bool> has_detail_backdrop: false;
+    in-out property <image> detail_logo;
+    in-out property <bool> has_detail_logo: false;
     in-out property <bool> detail_is_series: false;
     in-out property <string> detail_imdb_rating: "";
     in-out property <string> detail_runtime: "";
@@ -397,20 +399,20 @@ export component MainWindow inherits Window {
                         height: 100%;
                         background: #0b0b0e;
 
-                        // Full-bleed backdrop if present
+                        // Full-bleed backdrop if present (brighter and clearly visible)
                         if root.has_detail_backdrop : Image {
                             width: 100%;
                             height: 100%;
                             source: root.detail_backdrop;
                             image-fit: cover;
-                            opacity: 0.22;
+                            opacity: 0.50;
                         }
 
-                        // Scrim overlay
+                        // Gentle gradient/scrim overlay
                         Rectangle {
                             width: 100%;
                             height: 100%;
-                            background: #0b0b0ec8;
+                            background: #0b0b0e70;
                         }
 
                         // Top bar
@@ -449,118 +451,122 @@ export component MainWindow inherits Window {
                                 }
                             }
 
-                            // Top Right Controls (Fullscreen & Close)
-                            HorizontalLayout {
-                                spacing: 10px;
-                                alignment: center;
+                            // Top Right Fullscreen Button (Pure Vector Icon, completely reliable)
+                            Rectangle {
+                                width: 36px;
+                                height: 36px;
+                                border-radius: 18px;
+                                background: load_fs_touch.has-hover ? #25252c : #18181f;
+                                border-width: 1px;
+                                border-color: #2a2a35;
 
-                                Rectangle {
-                                    width: 36px;
-                                    height: 36px;
-                                    border-radius: 18px;
-                                    background: load_fs_touch.has-hover ? #25252c : #18181f;
-                                    border-width: 1px;
-                                    border-color: #2a2a35;
-                                    load_fs_touch := TouchArea {
-                                        width: 100%;
-                                        height: 100%;
-                                        mouse-cursor: pointer;
-                                        clicked => { root.player_toggle_fullscreen(); }
-                                    }
-                                    Text {
-                                        text: root.is_fullscreen ? "⤓" : "⛶";
-                                        font-size: 16px;
-                                        color: #ffffff;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
+                                load_fs_touch := TouchArea {
+                                    width: 100%;
+                                    height: 100%;
+                                    mouse-cursor: pointer;
+                                    clicked => { root.player_toggle_fullscreen(); }
                                 }
 
-                                Rectangle {
-                                    width: 36px;
-                                    height: 36px;
-                                    border-radius: 18px;
-                                    background: load_close_touch.has-hover ? #3a151b : #18181f;
-                                    border-width: 1px;
-                                    border-color: load_close_touch.has-hover ? #ff453a : #2a2a35;
-                                    load_close_touch := TouchArea {
-                                        width: 100%;
-                                        height: 100%;
-                                        mouse-cursor: pointer;
-                                        clicked => { root.player_back(); }
-                                    }
-                                    Text {
-                                        text: "✕";
-                                        font-size: 14px;
-                                        color: load_close_touch.has-hover ? #ff453a : #ffffff;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
+                                Path {
+                                    width: 16px;
+                                    height: 16px;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                    stroke: #ffffff;
+                                    stroke-width: 1.8px;
+                                    commands: root.is_fullscreen ? "M 6 2 L 6 6 L 2 6 M 10 2 L 10 6 L 14 6 M 14 10 L 10 10 L 10 14 M 2 10 L 6 10 L 6 14"
+                                                                : "M 2 6 L 2 2 L 6 2 M 10 2 L 14 2 L 14 6 M 14 10 L 14 14 L 10 14 M 6 14 L 2 14 L 2 10";
                                 }
                             }
                         }
 
-                        // Centered Card / Stream Telemetry
+                        // Centered Stream Telemetry & Title
                         VerticalLayout {
+                            x: 0px;
+                            y: 0px;
+                            width: 100%;
+                            height: 100%;
                             alignment: center;
                             spacing: 12px;
 
-                            Text {
-                                text: root.player_title != "" ? root.player_title : "Buffering Stream";
-                                font-size: 36px;
-                                font-weight: 800;
-                                color: #ffffff;
-                                horizontal-alignment: center;
-                                overflow: elide;
-                                max-width: 780px;
-                            }
-
-                            if root.detail_is_series && root.selected_episode_title != "" : Text {
-                                text: "S" + root.selected_season + ":E" + root.selected_episode + " • " + root.selected_episode_title;
-                                font-size: 16px;
-                                font-weight: 600;
-                                color: Theme.accent;
-                                horizontal-alignment: center;
-                            }
-
-                            Rectangle { height: 10px; }
-
-                            // 320x4px Accent Progress Bar
-                            Rectangle {
-                                width: 320px;
-                                height: 4px;
-                                background: #23232a;
-                                border-radius: 2px;
-                                clip: true;
-
-                                Rectangle {
-                                    x: 0px;
-                                    y: 0px;
-                                    height: 100%;
-                                    width: (root.player_progress_val > 0.0 ? root.player_progress_val : 0.35) * parent.width;
-                                    background: Theme.accent;
-                                    border-radius: 2px;
+                            // Title graphic logo if available, or bold title text
+                            HorizontalLayout {
+                                alignment: center;
+                                if root.has_detail_logo : Image {
+                                    source: root.detail_logo;
+                                    height: 70px;
+                                    image-fit: contain;
+                                    horizontal-alignment: center;
+                                }
+                                if !root.has_detail_logo : Text {
+                                    text: root.player_title != "" ? root.player_title : "Buffering Stream";
+                                    font-size: 32px;
+                                    font-weight: 800;
+                                    color: #ffffff;
+                                    horizontal-alignment: center;
+                                    overflow: elide;
+                                    max-width: 780px;
                                 }
                             }
 
-                            // Single-line telemetry string right beneath the bar
-                            Text {
-                                text: (root.player_peers_str != "" ? root.player_peers_str : "0 peers") + " • " +
-                                      (root.player_speed_str != "" ? root.player_speed_str : "0 KB/s") + " • " +
-                                      (root.player_progress_str != "" ? root.player_progress_str : "0% cached");
-                                font-size: 12px;
-                                font-weight: 500;
-                                color: #a0a0ab;
-                                horizontal-alignment: center;
+                            if root.detail_is_series && root.selected_episode_title != "" : HorizontalLayout {
+                                alignment: center;
+                                Text {
+                                    text: "S" + root.selected_season + ":E" + root.selected_episode + " • " + root.selected_episode_title;
+                                    font-size: 15px;
+                                    font-weight: 600;
+                                    color: Theme.accent;
+                                    horizontal-alignment: center;
+                                }
                             }
 
-                            // Status message
-                            Text {
-                                text: root.player_status_msg != "" ? root.player_status_msg : "Probing stream... Please wait";
-                                font-size: 13px;
-                                font-weight: 600;
-                                color: Theme.text;
-                                horizontal-alignment: center;
+                            Rectangle { height: 6px; }
+
+                            // 320x4px Accent Progress Bar (Centered)
+                            HorizontalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 320px;
+                                    height: 4px;
+                                    background: #23232a;
+                                    border-radius: 2px;
+                                    clip: true;
+
+                                    Rectangle {
+                                        x: 0px;
+                                        y: 0px;
+                                        height: 100%;
+                                        width: (root.player_progress_val > 0.0 ? root.player_progress_val : 0.35) * parent.width;
+                                        background: Theme.accent;
+                                        border-radius: 2px;
+                                    }
+                                }
+                            }
+
+                            // Single-line telemetry string right beneath the bar (Centered)
+                            HorizontalLayout {
+                                alignment: center;
+                                Text {
+                                    text: (root.player_peers_str != "" ? root.player_peers_str : "0 peers") + " • " +
+                                          (root.player_speed_str != "" ? root.player_speed_str : "0 KB/s") + " • " +
+                                          (root.player_progress_str != "" ? root.player_progress_str : "0% cached");
+                                    font-size: 12px;
+                                    font-weight: 500;
+                                    color: #a0a0ab;
+                                    horizontal-alignment: center;
+                                }
+                            }
+
+                            // Console-like informative loading status (Centered)
+                            HorizontalLayout {
+                                alignment: center;
+                                Text {
+                                    text: root.player_status_msg != "" ? root.player_status_msg : "Connecting to BitTorrent swarm & probing video container...";
+                                    font-size: 13px;
+                                    font-weight: 600;
+                                    color: Theme.text;
+                                    horizontal-alignment: center;
+                                }
                             }
                         }
                     }

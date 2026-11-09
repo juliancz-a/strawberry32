@@ -116,6 +116,36 @@ fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+fn format_release_date(raw: &str) -> String {
+    let s = raw.trim();
+    if s.is_empty() {
+        return String::new();
+    }
+    let date_part = s.split('T').next().unwrap_or(s);
+    let parts: Vec<&str> = date_part.split('-').collect();
+    if parts.len() >= 3 {
+        if let (Ok(_year), Ok(month), Ok(day)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>(), parts[2].parse::<u32>()) {
+            let month_name = match month {
+                1 => "January",
+                2 => "February",
+                3 => "March",
+                4 => "April",
+                5 => "May",
+                6 => "June",
+                7 => "July",
+                8 => "August",
+                9 => "September",
+                10 => "October",
+                11 => "November",
+                12 => "December",
+                _ => return s.to_string(),
+            };
+            return format!("{} {}", month_name, day);
+        }
+    }
+    s.to_string()
+}
+
 pub fn get_slint_hwnd(window: &slint::Window) -> HWND {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     if let Ok(wh) = window.window_handle().window_handle() {
@@ -832,6 +862,8 @@ pub fn run_app() -> Result<(), String> {
             ui.set_selected_season(1);
             ui.set_selected_episode(1);
             ui.set_has_detail_backdrop(false);
+            ui.set_has_detail_logo(false);
+            ui.set_detail_logo(slint::Image::default());
             ui.set_detail_poster(slint::Image::default());
             ui.set_is_streams_loading(true);
             ui.set_stream_items(ModelRc::from(Rc::new(VecModel::default())));
@@ -880,6 +912,19 @@ pub fn run_app() -> Result<(), String> {
                                 if let Some(ui) = app_weak_bg.upgrade() {
                                     ui.set_detail_backdrop(img);
                                     ui.set_has_detail_backdrop(true);
+                                }
+                            }
+                        });
+                    }
+
+                    // Fetch logo graphic if present
+                    if let Some(logo_url) = d.logo.as_ref() {
+                        let app_weak_logo = app_weak_meta.clone();
+                        crate::ui::images::request_image(logo_url.clone(), 300, 100, move |opt_img| {
+                            if let Some(img) = opt_img {
+                                if let Some(ui) = app_weak_logo.upgrade() {
+                                    ui.set_detail_logo(img);
+                                    ui.set_has_detail_logo(true);
                                 }
                             }
                         });
@@ -938,7 +983,7 @@ pub fn run_app() -> Result<(), String> {
                                 ui.set_selected_episode(ep.episode as i32);
                                 ui.set_selected_episode_title(ep.title.clone().into());
                                 ui.set_selected_episode_overview(ep.overview.clone().unwrap_or_else(|| "No synopsis available for this episode.".to_string()).into());
-                                ui.set_selected_episode_released(ep.released.clone().unwrap_or_default().into());
+                                ui.set_selected_episode_released(format_release_date(&ep.released.clone().unwrap_or_default()).into());
                             } else {
                                 ui.set_selected_episode(1);
                                 ui.set_selected_episode_title("Episode 1".into());
@@ -954,7 +999,7 @@ pub fn run_app() -> Result<(), String> {
                                     season: v.season as i32,
                                     episode: v.episode as i32,
                                     title: v.title.clone().into(),
-                                    released: v.released.clone().unwrap_or_default().into(),
+                                    released: format_release_date(&v.released.clone().unwrap_or_default()).into(),
                                     overview: v.overview.clone().unwrap_or_default().into(),
                                 })
                                 .collect();
@@ -977,7 +1022,7 @@ pub fn run_app() -> Result<(), String> {
                 season: v.season as i32,
                 episode: v.episode as i32,
                 title: v.title.clone().into(),
-                released: v.released.clone().unwrap_or_default().into(),
+                released: format_release_date(&v.released.clone().unwrap_or_default()).into(),
                 overview: v.overview.clone().unwrap_or_default().into(),
             })
             .collect();
@@ -989,7 +1034,7 @@ pub fn run_app() -> Result<(), String> {
                 ui.set_selected_episode(ep.episode as i32);
                 ui.set_selected_episode_title(ep.title.clone().into());
                 ui.set_selected_episode_overview(ep.overview.clone().unwrap_or_else(|| "No synopsis available for this episode.".to_string()).into());
-                ui.set_selected_episode_released(ep.released.clone().unwrap_or_default().into());
+                ui.set_selected_episode_released(format_release_date(&ep.released.clone().unwrap_or_default()).into());
             } else {
                 ui.set_selected_episode(1);
                 ui.set_selected_episode_title("Episode 1".into());
@@ -1023,7 +1068,7 @@ pub fn run_app() -> Result<(), String> {
             if let Some(ep) = videos.iter().find(|v| v.season as i32 == season && v.episode as i32 == episode) {
                 ui.set_selected_episode_title(ep.title.clone().into());
                 ui.set_selected_episode_overview(ep.overview.clone().unwrap_or_else(|| "No synopsis available for this episode.".to_string()).into());
-                ui.set_selected_episode_released(ep.released.clone().unwrap_or_default().into());
+                ui.set_selected_episode_released(format_release_date(&ep.released.clone().unwrap_or_default()).into());
             }
             ui.set_is_streams_loading(true);
             ui.set_status_text(format!("Fetching streams for S{}E{}...", season, episode).into());
@@ -1135,9 +1180,12 @@ pub fn run_app() -> Result<(), String> {
                                 for b in bundled {
                                     let local_url = format!("http://127.0.0.1:3030/torrents/0/stream/{}", b.file_idx);
                                     let clean_name = subtitles::clean_language_name(&b.lang);
+                                    let badge = subtitles::get_sub_format_badge(&local_url);
                                     tracks.insert(0, state::SubtitleTrack {
                                         id: format!("bundled_{}", b.file_idx),
-                                        lang: format!("{} [Embedded]", clean_name),
+                                        lang: clean_name.clone(),
+                                        label: format!("{} [Embedded] {}", clean_name, badge),
+                                        source: "embedded".to_string(),
                                         url: local_url,
                                     });
                                 }
@@ -1158,17 +1206,30 @@ pub fn run_app() -> Result<(), String> {
                                 if let Some(track) = tracks.get(chosen_idx) {
                                     if let Ok(entries) = subtitles::download_and_parse_subtitle(&track.url) {
                                         subtitles::set_active_subtitles(entries, &track.lang);
-                                        log_player(&format!("Auto-loaded subtitle track #{}: {}", chosen_idx, track.lang));
+                                        log_player(&format!("Auto-loaded subtitle track #{}: {}", chosen_idx, track.label));
                                     }
                                 }
 
-                                let track_names: Vec<String> = tracks.iter().map(|t| {
-                                    let badge = subtitles::get_sub_format_badge(&t.url);
-                                    format!("{} {}", t.lang, badge)
-                                }).collect();
+                                let mut overlay_items = Vec::new();
+                                let mut available_langs = Vec::new();
+                                for (idx, t) in tracks.iter().enumerate() {
+                                    overlay_items.push(crate::ui::overlay::SubtitleItem {
+                                        idx: idx as i32,
+                                        lang: t.lang.clone().into(),
+                                        label: t.label.clone().into(),
+                                        source: t.source.clone().into(),
+                                    });
+                                    if !available_langs.contains(&t.lang) {
+                                        available_langs.push(t.lang.clone());
+                                    }
+                                }
+                                available_langs.sort();
+
+                                let track_names: Vec<String> = tracks.iter().map(|t| t.label.clone()).collect();
 
                                 let _ = slint::invoke_from_event_loop(move || {
                                     crate::ui::overlay::set_overlay_subtitle_tracks(track_names, chosen_idx);
+                                    crate::ui::overlay::set_overlay_subtitle_items(overlay_items, available_langs, chosen_idx);
                                 });
                             });
                         }
@@ -1351,6 +1412,16 @@ pub fn run_app() -> Result<(), String> {
                                                     }
                                                 });
 
+                                                overlay.on_select_language_group(move |lang| {
+                                                    crate::ui::overlay::notify_user_activity();
+                                                    crate::ui::overlay::select_overlay_language_group(lang.as_str());
+                                                });
+
+                                                overlay.on_select_category_filter(move |cat| {
+                                                    crate::ui::overlay::notify_user_activity();
+                                                    crate::ui::overlay::select_overlay_category_filter(cat.as_str());
+                                                });
+
                                                 let overlay_weak_sub_sel = overlay.as_weak();
                                                 overlay.on_select_subtitle_track(move |idx| {
                                                     crate::ui::overlay::notify_user_activity();
@@ -1359,15 +1430,21 @@ pub fn run_app() -> Result<(), String> {
                                                         let track_url = track.url.clone();
                                                         let track_lang = track.lang.clone();
                                                         let ov_weak = overlay_weak_sub_sel.clone();
+                                                        if let Some(ov) = ov_weak.upgrade() {
+                                                            ov.set_is_subtitle_loading(true);
+                                                        }
                                                         std::thread::spawn(move || {
-                                                            if let Ok(entries) = subtitles::download_and_parse_subtitle(&track_url) {
-                                                                subtitles::set_active_subtitles(entries, &track_lang);
-                                                                let _ = slint::invoke_from_event_loop(move || {
-                                                                    if let Some(ov) = ov_weak.upgrade() {
+                                                            let res = subtitles::download_and_parse_subtitle(&track_url);
+                                                            let _ = slint::invoke_from_event_loop(move || {
+                                                                if let Some(ov) = ov_weak.upgrade() {
+                                                                    ov.set_is_subtitle_loading(false);
+                                                                    if let Ok(entries) = res {
+                                                                        subtitles::set_active_subtitles(entries, &track_lang);
                                                                         ov.set_selected_subtitle_idx(idx);
+                                                                        ov.set_active_sub_lang(track_lang.into());
                                                                     }
-                                                                });
-                                                            }
+                                                                }
+                                                            });
                                                         });
                                                     }
                                                 });

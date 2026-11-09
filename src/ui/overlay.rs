@@ -393,3 +393,212 @@ pub fn set_overlay_subtitle_tracks(track_names: Vec<String>, selected_idx: usize
         }
     });
 }
+
+thread_local! {
+    static CACHED_SUBTITLE_ITEMS: RefCell<Vec<SubtitleItem>> = const { RefCell::new(Vec::new()) };
+}
+
+fn rebuild_subtitle_groups_on_overlay(ov: &PlayerOverlay, items: &[SubtitleItem]) {
+    let cat_filter = ov.get_sub_category_filter().to_string();
+    let cur_selected_lang = ov.get_selected_lang_group().to_string();
+    let active_lang = ov.get_active_sub_lang().to_string();
+
+    // 1. Collect language groups matching the current category filter ("all", "embedded", "addon")
+    let mut lang_order: Vec<String> = Vec::new();
+    let mut lang_counts: std::collections::HashMap<String, (i32, bool)> = std::collections::HashMap::new();
+
+    for item in items {
+        let src = item.source.as_str();
+        if cat_filter != "all" && src != cat_filter {
+            continue;
+        }
+        let lang = item.lang.to_string();
+        let entry = lang_counts.entry(lang.clone()).or_insert_with(|| {
+            lang_order.push(lang);
+            (0, false)
+        });
+        entry.0 += 1;
+        if src == "embedded" {
+            entry.1 = true;
+        }
+    }
+
+    // Sort languages: active language first, then languages with embedded tracks, then alphabetical
+    lang_order.sort_by(|a, b| {
+        let a_active = a == &active_lang;
+        let b_active = b == &active_lang;
+        if a_active != b_active {
+            return b_active.cmp(&a_active);
+        }
+        let a_emb = lang_counts.get(a).map(|x| x.1).unwrap_or(false);
+        let b_emb = lang_counts.get(b).map(|x| x.1).unwrap_or(false);
+        if a_emb != b_emb {
+            return b_emb.cmp(&a_emb);
+        }
+        a.cmp(b)
+    });
+
+    let groups: Vec<SubtitleLangGroup> = lang_order
+        .iter()
+        .filter_map(|l| {
+            lang_counts.get(l).map(|(count, has_emb)| SubtitleLangGroup {
+                lang: l.clone().into(),
+                count: *count,
+                has_embedded: *has_emb,
+            })
+        })
+        .collect();
+
+    // If current selected_lang_group no longer exists under this category filter, reset to ""
+    let effective_lang = if !cur_selected_lang.is_empty() && lang_counts.contains_key(&cur_selected_lang) {
+        cur_selected_lang
+    } else if groups.len() == 1 {
+        // Auto-expand if only 1 language group exists
+        groups[0].lang.to_string()
+    } else {
+        String::new()
+    };
+
+    ov.set_selected_lang_group(effective_lang.clone().into());
+    ov.set_language_groups(slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(groups))));
+
+    // 2. Populate visible_subtitles for the selected language group (with embedded tracks first)
+    let mut visible: Vec<SubtitleItem> = items
+        .iter()
+        .filter(|item| {
+            let src_ok = cat_filter == "all" || item.source.as_str() == cat_filter;
+            let lang_ok = effective_lang.is_empty() || item.lang.as_str() == effective_lang;
+            src_ok && lang_ok
+        })
+        .cloned()
+        .collect();
+
+    visible.sort_by(|a, b| {
+        let a_emb = a.source.as_str() == "embedded";
+        let b_emb = b.source.as_str() == "embedded";
+        if a_emb != b_emb {
+            b_emb.cmp(&a_emb)
+        } else {
+            a.idx.cmp(&b.idx)
+        }
+    });
+
+    ov.set_visible_subtitles(slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(visible))));
+}
+
+/// Updates rich subtitle items with category and vertical language grouping on the overlay
+pub fn set_overlay_subtitle_items(items: Vec<SubtitleItem>, available_langs: Vec<String>, selected_idx: usize) {
+    CACHED_SUBTITLE_ITEMS.with(|c| {
+        *c.borrow_mut() = items.clone();
+    });
+
+    OVERLAY_INSTANCE.with(|cell| {
+        if let Ok(guard) = cell.try_borrow() {
+            if let Some(ov) = guard.as_ref() {
+                let active_lang = items
+                    .iter()
+                    .find(|i| i.idx == selected_idx as i32)
+                    .map(|i| i.lang.to_string())
+                    .unwrap_or_default();
+
+                ov.set_active_sub_lang(active_lang.into());
+                ov.set_selected_lang_group("".into());
+                ov.set_sub_category_filter("all".into());
+                ov.set_all_subtitles(slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(items.clone()))));
+                let slint_langs: Vec<slint::SharedString> = available_langs.into_iter().map(|s| s.into()).collect();
+                ov.set_available_languages(slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(slint_langs))));
+                ov.set_selected_subtitle_idx(selected_idx as i32);
+                ov.set_is_subtitle_loading(false);
+                rebuild_subtitle_groups_on_overlay(ov, &items);
+            }
+        }
+    });
+}
+
+/// Selects a language group in the vertical subtitle list (or "" to return to All Languages)
+pub fn select_overlay_language_group(lang: &str) {
+    CACHED_SUBTITLE_ITEMS.with(|c| {
+        let items = c.borrow();
+        OVERLAY_INSTANCE.with(|cell| {
+            if let Ok(guard) = cell.try_borrow() {
+                if let Some(ov) = guard.as_ref() {
+                    ov.set_selected_lang_group(lang.into());
+                    if lang.is_empty() {
+                        // Explicitly keep "" when returning to language groups list even if 1 group
+                        let cat_filter = ov.get_sub_category_filter().to_string();
+                        let active_lang = ov.get_active_sub_lang().to_string();
+                        let mut lang_order: Vec<String> = Vec::new();
+                        let mut lang_counts: std::collections::HashMap<String, (i32, bool)> = std::collections::HashMap::new();
+                        for item in items.iter() {
+                            let src = item.source.as_str();
+                            if cat_filter != "all" && src != cat_filter {
+                                continue;
+                            }
+                            let l = item.lang.to_string();
+                            let entry = lang_counts.entry(l.clone()).or_insert_with(|| {
+                                lang_order.push(l);
+                                (0, false)
+                            });
+                            entry.0 += 1;
+                            if src == "embedded" {
+                                entry.1 = true;
+                            }
+                        }
+                        lang_order.sort_by(|a, b| {
+                            let a_active = a == &active_lang;
+                            let b_active = b == &active_lang;
+                            if a_active != b_active {
+                                return b_active.cmp(&a_active);
+                            }
+                            let a_emb = lang_counts.get(a).map(|x| x.1).unwrap_or(false);
+                            let b_emb = lang_counts.get(b).map(|x| x.1).unwrap_or(false);
+                            if a_emb != b_emb {
+                                return b_emb.cmp(&a_emb);
+                            }
+                            a.cmp(b)
+                        });
+                        let groups: Vec<SubtitleLangGroup> = lang_order
+                            .iter()
+                            .filter_map(|l| {
+                                lang_counts.get(l).map(|(count, has_emb)| SubtitleLangGroup {
+                                    lang: l.clone().into(),
+                                    count: *count,
+                                    has_embedded: *has_emb,
+                                })
+                            })
+                            .collect();
+                        ov.set_language_groups(slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(groups))));
+                    } else {
+                        rebuild_subtitle_groups_on_overlay(ov, &items);
+                    }
+                }
+            }
+        });
+    });
+}
+
+/// Selects the subtitle source category filter ("all", "embedded", "addon")
+pub fn select_overlay_category_filter(category: &str) {
+    CACHED_SUBTITLE_ITEMS.with(|c| {
+        let items = c.borrow();
+        OVERLAY_INSTANCE.with(|cell| {
+            if let Ok(guard) = cell.try_borrow() {
+                if let Some(ov) = guard.as_ref() {
+                    ov.set_sub_category_filter(category.into());
+                    rebuild_subtitle_groups_on_overlay(ov, &items);
+                }
+            }
+        });
+    });
+}
+
+/// Updates whether a subtitle is currently downloading
+pub fn set_overlay_subtitle_loading(loading: bool) {
+    OVERLAY_INSTANCE.with(|cell| {
+        if let Ok(guard) = cell.try_borrow() {
+            if let Some(ov) = guard.as_ref() {
+                ov.set_is_subtitle_loading(loading);
+            }
+        }
+    });
+}

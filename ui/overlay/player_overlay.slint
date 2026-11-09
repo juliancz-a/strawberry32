@@ -1,12 +1,25 @@
 import { Theme } from "../theme.slint";
 import { ScrollView } from "std-widgets.slint";
 
+export struct SubtitleItem {
+    idx: int,
+    lang: string,
+    label: string,
+    source: string,
+}
+
+export struct SubtitleLangGroup {
+    lang: string,
+    count: int,
+    has_embedded: bool,
+}
+
 component OverlayButton inherits Rectangle {
     in property <string> text: "";
     in property <bool> is_active: false;
     callback clicked();
 
-    height: 34px;
+    height: 32px;
     min-width: 44px;
     border-radius: 6px;
     background: root.is_active ? Theme.accent : (touch.pressed ? Theme.accent : (touch.has-hover ? #2a2b2e : #1c1d20));
@@ -36,14 +49,212 @@ component OverlayButton inherits Rectangle {
     }
 }
 
+component PlayerIconGlyph inherits Rectangle {
+    in property <string> icon_type: "";
+    in property <color> icon_color: #d0d0d8;
+
+    width: 20px;
+    height: 20px;
+
+    // "back": left arrow centered at (10,10) in 0..20 viewbox
+    if root.icon_type == "back" : Path {
+        x: 0px;
+        y: 0px;
+        width: 20px;
+        height: 20px;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 20;
+        viewbox-height: 20;
+        stroke: root.icon_color;
+        stroke-width: 2px;
+        commands: "M 11 4 L 5 10 L 11 16 M 5 10 L 16 10";
+    }
+
+    // "play": play triangle visually centered at (10,10)
+    if root.icon_type == "play" : Path {
+        x: 0px;
+        y: 0px;
+        width: 20px;
+        height: 20px;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 20;
+        viewbox-height: 20;
+        fill: root.icon_color;
+        commands: "M 6 4 L 16 10 L 6 16 Z";
+    }
+
+    // "pause": two symmetrical vertical bars centered around x=10, y=10
+    if root.icon_type == "pause" : Path {
+        x: 0px;
+        y: 0px;
+        width: 20px;
+        height: 20px;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 20;
+        viewbox-height: 20;
+        fill: root.icon_color;
+        commands: "M 5 4 L 8.5 4 L 8.5 16 L 5 16 Z M 11.5 4 L 15 4 L 15 16 L 11.5 16 Z";
+    }
+
+    // "rewind": two left triangles centered in 0..20
+    if root.icon_type == "rewind" : Path {
+        x: 0px;
+        y: 0px;
+        width: 20px;
+        height: 20px;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 20;
+        viewbox-height: 20;
+        fill: root.icon_color;
+        commands: "M 10 5 L 3 10 L 10 15 Z M 17 5 L 10 10 L 17 15 Z";
+    }
+
+    // "forward": two right triangles centered in 0..20
+    if root.icon_type == "forward" : Path {
+        x: 0px;
+        y: 0px;
+        width: 20px;
+        height: 20px;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 20;
+        viewbox-height: 20;
+        fill: root.icon_color;
+        commands: "M 3 5 L 10 10 L 3 15 Z M 10 5 L 17 10 L 10 15 Z";
+    }
+
+    // "next": right triangle + bar centered in 0..20
+    if root.icon_type == "next" : Path {
+        x: 0px;
+        y: 0px;
+        width: 20px;
+        height: 20px;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 20;
+        viewbox-height: 20;
+        fill: root.icon_color;
+        commands: "M 4 4 L 13 10 L 4 16 Z M 14 4 L 16 4 L 16 16 L 14 16 Z";
+    }
+
+    // "volume": speaker horn + sound waves centered in 0..20
+    if root.icon_type == "volume" : Path {
+        x: 0px;
+        y: 0px;
+        width: 20px;
+        height: 20px;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 20;
+        viewbox-height: 20;
+        stroke: root.icon_color;
+        stroke-width: 1.6px;
+        commands: "M 3 7.5 L 6 7.5 L 10.5 4 L 10.5 16 L 6 12.5 L 3 12.5 Z M 13.5 7 C 15 8.5 15 11.5 13.5 13 M 15.5 5 C 18 7.5 18 12.5 15.5 15";
+    }
+
+    // "mute": speaker horn + X centered in 0..20
+    if root.icon_type == "mute" : Path {
+        x: 0px;
+        y: 0px;
+        width: 20px;
+        height: 20px;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 20;
+        viewbox-height: 20;
+        stroke: #ff5555;
+        stroke-width: 1.6px;
+        commands: "M 3 7.5 L 6 7.5 L 10.5 4 L 10.5 16 L 6 12.5 L 3 12.5 Z M 13.5 7.5 L 17.5 12.5 M 17.5 7.5 L 13.5 12.5";
+    }
+
+    // "subtitles": CC / subtitle box centered in 0..20
+    if root.icon_type == "subtitles" : Path {
+        x: 0px;
+        y: 0px;
+        width: 20px;
+        height: 20px;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 20;
+        viewbox-height: 20;
+        stroke: root.icon_color;
+        stroke-width: 1.6px;
+        commands: "M 2.5 4.5 L 17.5 4.5 L 17.5 14.5 L 10 14.5 L 6.5 17.5 L 6.5 14.5 L 2.5 14.5 Z M 5.5 8.5 L 14.5 8.5 M 5.5 11.5 L 12 11.5";
+    }
+
+    // "info": octagram/circle with "i" centered at (10,10) in 0..20
+    if root.icon_type == "info" : Path {
+        x: 0px;
+        y: 0px;
+        width: 20px;
+        height: 20px;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 20;
+        viewbox-height: 20;
+        stroke: root.icon_color;
+        stroke-width: 1.6px;
+        commands: "M 3 6 L 6 3 L 14 3 L 17 6 L 17 14 L 14 17 L 6 17 L 3 14 Z M 10 6.5 L 10 7.5 M 10 9.5 L 10 14";
+    }
+
+    // "fullscreen": 4 corners expand centered in 0..20
+    if root.icon_type == "fullscreen" : Path {
+        x: 0px;
+        y: 0px;
+        width: 20px;
+        height: 20px;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 20;
+        viewbox-height: 20;
+        stroke: root.icon_color;
+        stroke-width: 1.8px;
+        commands: "M 3 7.5 L 3 3 L 7.5 3 M 12.5 3 L 17 3 L 17 7.5 M 17 12.5 L 17 17 L 12.5 17 M 7.5 17 L 3 17 L 3 12.5";
+    }
+
+    // "restore": 4 corners compress centered in 0..20
+    if root.icon_type == "restore" : Path {
+        x: 0px;
+        y: 0px;
+        width: 20px;
+        height: 20px;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 20;
+        viewbox-height: 20;
+        stroke: root.icon_color;
+        stroke-width: 1.8px;
+        commands: "M 7 3 L 7 7 L 3 7 M 13 3 L 13 7 L 17 7 M 17 13 L 13 13 L 13 17 M 3 13 L 7 13 L 7 17";
+    }
+
+    // "close": symmetrical X centered at (10,10) in 0..20
+    if root.icon_type == "close" : Path {
+        x: 0px;
+        y: 0px;
+        width: 20px;
+        height: 20px;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 20;
+        viewbox-height: 20;
+        stroke: #ffffff;
+        stroke-width: 2px;
+        commands: "M 5 5 L 15 15 M 15 5 L 5 15";
+    }
+}
+
 component PlayerIconBtn inherits Rectangle {
-    in property <string> icon_type: ""; // "back", "play", "pause", "rewind", "forward", "next", "subtitles", "volume", "mute", "info", "fullscreen", "restore", "close"
+    in property <string> icon_type: "";
     in property <string> text_label: "";
     in property <bool> is_active: false;
     callback clicked();
 
     height: 36px;
-    min-width: root.text_label != "" ? 56px : 36px;
+    width: root.text_label != "" ? 68px : 38px;
     border-radius: 6px;
     background: root.is_active ? Theme.accent : (btn_touch.pressed ? #ffffff2a : (btn_touch.has-hover ? #ffffff1a : #00000000));
 
@@ -54,136 +265,40 @@ component PlayerIconBtn inherits Rectangle {
         clicked => { root.clicked(); }
     }
 
-    HorizontalLayout {
+    // Pure icon button: exact mathematical center on both axes
+    if root.text_label == "" : PlayerIconGlyph {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        icon_type: root.icon_type;
+        icon_color: root.is_active ? #ffffff : (btn_touch.has-hover ? #ffffff : #d0d0d8);
+    }
+
+    // Icon + text button: both icon and text wrapped in centered VerticalLayouts
+    if root.text_label != "" : HorizontalLayout {
+        width: 100%;
+        height: 100%;
         padding-left: 8px;
         padding-right: 8px;
-        spacing: 6px;
+        spacing: 5px;
         alignment: center;
 
-        // 20x20px icon area with Slint Path vector icons
-        Rectangle {
-            width: 20px;
-            height: 20px;
-
-            // "back": left arrow
-            if root.icon_type == "back" : Path {
-                width: 16px;
-                height: 16px;
-                stroke: root.is_active ? #ffffff : (btn_touch.has-hover ? #ffffff : #d0d0d8);
-                stroke-width: 2px;
-                commands: "M 13 3 L 5 10 L 13 17 M 5 10 L 19 10";
-            }
-
-            // "play": play triangle
-            if root.icon_type == "play" : Path {
-                width: 16px;
-                height: 16px;
-                fill: root.is_active ? #ffffff : (btn_touch.has-hover ? #ffffff : #d0d0d8);
-                commands: "M 4 2 L 16 10 L 4 18 Z";
-            }
-
-            // "pause": two bars
-            if root.icon_type == "pause" : Path {
-                width: 16px;
-                height: 16px;
-                fill: root.is_active ? #ffffff : (btn_touch.has-hover ? #ffffff : #d0d0d8);
-                commands: "M 4 3 L 7 3 L 7 17 L 4 17 Z M 11 3 L 14 3 L 14 17 L 11 17 Z";
-            }
-
-            // "rewind": two left triangles
-            if root.icon_type == "rewind" : Path {
-                width: 16px;
-                height: 16px;
-                fill: root.is_active ? #ffffff : (btn_touch.has-hover ? #ffffff : #d0d0d8);
-                commands: "M 9 4 L 2 10 L 9 16 Z M 16 4 L 9 10 L 16 16 Z";
-            }
-
-            // "forward": two right triangles
-            if root.icon_type == "forward" : Path {
-                width: 16px;
-                height: 16px;
-                fill: root.is_active ? #ffffff : (btn_touch.has-hover ? #ffffff : #d0d0d8);
-                commands: "M 2 4 L 9 10 L 2 16 Z M 9 4 L 16 10 L 9 16 Z";
-            }
-
-            // "next": right triangle + bar
-            if root.icon_type == "next" : Path {
-                width: 16px;
-                height: 16px;
-                fill: root.is_active ? #ffffff : (btn_touch.has-hover ? #ffffff : #d0d0d8);
-                commands: "M 3 4 L 11 10 L 3 16 Z M 13 4 L 15 4 L 15 16 L 13 16 Z";
-            }
-
-            // "volume": speaker horn + sound waves
-            if root.icon_type == "volume" : Path {
-                width: 16px;
-                height: 16px;
-                stroke: root.is_active ? #ffffff : (btn_touch.has-hover ? #ffffff : #d0d0d8);
-                stroke-width: 1.6px;
-                commands: "M 2 7 L 5 7 L 10 3 L 10 17 L 5 13 L 2 13 Z M 13 6 C 15 8 15 12 13 14 M 15 4 C 18 7 18 13 15 16";
-            }
-
-            // "mute": speaker horn + X
-            if root.icon_type == "mute" : Path {
-                width: 16px;
-                height: 16px;
-                stroke: #ff5555;
-                stroke-width: 1.6px;
-                commands: "M 2 7 L 5 7 L 10 3 L 10 17 L 5 13 L 2 13 Z M 13 7 L 17 13 M 17 7 L 13 13";
-            }
-
-            // "subtitles": speech bubble / cc box
-            if root.icon_type == "subtitles" : Path {
-                width: 16px;
-                height: 16px;
-                stroke: root.is_active ? #ffffff : (btn_touch.has-hover ? #ffffff : #d0d0d8);
-                stroke-width: 1.6px;
-                commands: "M 2 4 L 18 4 L 18 14 L 10 14 L 6 18 L 6 14 L 2 14 Z M 5 8 L 15 8 M 5 11 L 12 11";
-            }
-
-            // "info": circle with "i"
-            if root.icon_type == "info" : Path {
-                width: 16px;
-                height: 16px;
-                stroke: root.is_active ? #ffffff : (btn_touch.has-hover ? #ffffff : #d0d0d8);
-                stroke-width: 1.6px;
-                commands: "M 10 2 A 8 8 0 1 0 10 18 A 8 8 0 1 0 10 2 M 10 5 L 10 6 M 10 9 L 10 15";
-            }
-
-            // "fullscreen": 4 corners expand
-            if root.icon_type == "fullscreen" : Path {
-                width: 16px;
-                height: 16px;
-                stroke: root.is_active ? #ffffff : (btn_touch.has-hover ? #ffffff : #d0d0d8);
-                stroke-width: 1.8px;
-                commands: "M 2 7 L 2 2 L 7 2 M 13 2 L 18 2 L 18 7 M 18 13 L 18 18 L 13 18 M 7 18 L 2 18 L 2 13";
-            }
-
-            // "restore": 4 corners compress
-            if root.icon_type == "restore" : Path {
-                width: 16px;
-                height: 16px;
-                stroke: root.is_active ? #ffffff : (btn_touch.has-hover ? #ffffff : #d0d0d8);
-                stroke-width: 1.8px;
-                commands: "M 6 2 L 6 6 L 2 6 M 14 2 L 14 6 L 18 6 M 18 14 L 14 14 L 14 18 M 2 14 L 6 14 L 6 18";
-            }
-
-            // "close": X
-            if root.icon_type == "close" : Path {
-                width: 16px;
-                height: 16px;
-                stroke: #ffffff;
-                stroke-width: 2px;
-                commands: "M 3 3 L 15 15 M 15 3 L 3 15";
+        VerticalLayout {
+            alignment: center;
+            PlayerIconGlyph {
+                icon_type: root.icon_type;
+                icon_color: root.is_active ? #ffffff : (btn_touch.has-hover ? #ffffff : #d0d0d8);
             }
         }
 
-        if root.text_label != "" : Text {
-            text: root.text_label;
-            font-size: 12px;
-            font-weight: 700;
-            color: root.is_active ? #ffffff : (btn_touch.has-hover ? #ffffff : #d0d0d8);
-            vertical-alignment: center;
+        VerticalLayout {
+            alignment: center;
+            Text {
+                text: root.text_label;
+                font-size: 12px;
+                font-weight: 700;
+                color: root.is_active ? #ffffff : (btn_touch.has-hover ? #ffffff : #d0d0d8);
+                vertical-alignment: center;
+            }
         }
     }
 }
@@ -206,6 +321,15 @@ export component PlayerOverlay inherits Window {
     // Subtitle Controls
     in-out property <bool> subtitles_enabled: true;
     in-out property <[string]> subtitle_track_names: [];
+    in-out property <[SubtitleItem]> all_subtitles: [];
+    in-out property <[SubtitleLangGroup]> language_groups: [];
+    in-out property <[SubtitleItem]> visible_subtitles: [];
+    in-out property <[string]> available_languages: [];
+    in-out property <string> sub_category_filter: "all"; // "all", "embedded", "addon"
+    in-out property <string> sub_lang_filter: "all";
+    in-out property <string> selected_lang_group: "";
+    in-out property <string> active_sub_lang: "";
+    in-out property <bool> is_subtitle_loading: false;
     in-out property <int> selected_subtitle_idx: 0;
     in-out property <int> sub_delay_ms: 0;
     in-out property <int> sub_size: 1; // 0=Small, 1=Medium, 2=Large
@@ -230,6 +354,8 @@ export component PlayerOverlay inherits Window {
     callback toggle_panel(int);
     callback toggle_subtitles_enabled(bool);
     callback select_subtitle_track(int);
+    callback select_language_group(string);
+    callback select_category_filter(string);
     callback sub_delay_adjust(int);
     callback sub_size_changed(int);
     callback volume_adjust(int);
@@ -343,12 +469,14 @@ export component PlayerOverlay inherits Window {
 
             Rectangle { height: 1px; background: #2a2b2e; }
 
-            // PANEL 1: SUBTITLES
+            // PANEL 1: SUBTITLES (Vertical Language Grouping -> Track List)
             if root.active_panel == 1 : VerticalLayout {
-                spacing: 12px;
+                spacing: 8px;
+                alignment: start;
 
                 // Subtitles Enabled On/Off row
                 HorizontalLayout {
+                    height: 26px;
                     alignment: space-between;
                     Text {
                         text: "Enable Subtitles";
@@ -385,48 +513,154 @@ export component PlayerOverlay inherits Window {
                     }
                 }
 
-                Rectangle { height: 1px; background: #2a2b2e; }
-
-                // Subtitle Track Selection List (scrollable up to 150px)
-                Text {
-                    text: "Available Tracks (" + root.subtitle_track_names.length + "):";
-                    font-size: 12px;
-                    font-weight: 700;
-                    color: Theme.accent;
+                // Loading feedback banner when downloading
+                if root.is_subtitle_loading : Rectangle {
+                    height: 26px;
+                    background: #e5a00d25;
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: #e5a00d;
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 8px;
+                        Text {
+                            text: "⏳ Downloading subtitle track...";
+                            font-size: 11px;
+                            font-weight: 700;
+                            color: #f59e0b;
+                            vertical-alignment: center;
+                        }
+                    }
                 }
 
+                Rectangle { height: 1px; background: #2a2b2e; }
+
+                // Category Tabs Row: [All] [Embedded] [Addons]
+                HorizontalLayout {
+                    height: 24px;
+                    alignment: space-between;
+                    Text {
+                        text: "Source:";
+                        font-size: 11px;
+                        font-weight: 700;
+                        color: Theme.text-muted;
+                        vertical-alignment: center;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 6px;
+                        alignment: end;
+
+                        Rectangle {
+                            height: 24px;
+                            width: 44px;
+                            background: root.sub_category_filter == "all" ? Theme.accent : #222328;
+                            border-radius: 4px;
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.user_activity();
+                                    root.select_category_filter("all");
+                                }
+                            }
+                            Text {
+                                text: "All";
+                                font-size: 11px;
+                                font-weight: 700;
+                                color: #ffffff;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        Rectangle {
+                            height: 24px;
+                            width: 84px;
+                            background: root.sub_category_filter == "embedded" ? #a855f7 : #222328;
+                            border-radius: 4px;
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.user_activity();
+                                    root.select_category_filter("embedded");
+                                }
+                            }
+                            Text {
+                                text: "📦 Embedded";
+                                font-size: 10px;
+                                font-weight: 700;
+                                color: #ffffff;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        Rectangle {
+                            height: 24px;
+                            width: 76px;
+                            background: root.sub_category_filter == "addon" ? #06b6d4 : #222328;
+                            border-radius: 4px;
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.user_activity();
+                                    root.select_category_filter("addon");
+                                }
+                            }
+                            Text {
+                                text: "🌐 Addons";
+                                font-size: 10px;
+                                font-weight: 700;
+                                color: #ffffff;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                // Vertical Language-Grouped Box (2-stage drill-down: Languages -> Tracks)
                 Rectangle {
-                    height: 140px;
+                    height: 176px;
                     background: #101113;
                     border-radius: 6px;
                     border-width: 1px;
                     border-color: #26272b;
+                    clip: true;
 
-                    if root.subtitle_track_names.length == 0 : Text {
-                        text: "No subtitles found for this title.";
+                    if root.language_groups.length == 0 : Text {
+                        text: "No subtitles found for this filter.";
                         font-size: 12px;
                         color: Theme.text-muted;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }
 
-                    if root.subtitle_track_names.length > 0 : ScrollView {
+                    // STAGE 1: Vertical Language Group List
+                    if root.language_groups.length > 0 && root.selected_lang_group == "" : ScrollView {
+                        width: 100%;
+                        height: 100%;
+                        viewport-height: root.language_groups.length * 40px + 12px;
+
                         VerticalLayout {
+                            alignment: start;
                             padding: 6px;
                             spacing: 4px;
 
-                            for track[idx] in root.subtitle_track_names : Rectangle {
-                                height: 32px;
-                                border-radius: 4px;
-                                background: idx == root.selected_subtitle_idx ? Theme.accent : (trk_touch.has-hover ? #222328 : #18191c);
+                            for grp in root.language_groups : Rectangle {
+                                height: 36px;
+                                border-radius: 5px;
+                                border-width: grp.lang == root.active_sub_lang ? 1px : 0px;
+                                border-color: Theme.accent;
+                                background: grp_touch.has-hover ? #25272d : (grp.lang == root.active_sub_lang ? #221720 : #18191c);
 
-                                trk_touch := TouchArea {
+                                grp_touch := TouchArea {
                                     width: 100%;
                                     height: 100%;
                                     mouse-cursor: pointer;
                                     clicked => {
                                         root.user_activity();
-                                        root.select_subtitle_track(idx);
+                                        root.select_language_group(grp.lang);
                                     }
                                 }
 
@@ -435,21 +669,193 @@ export component PlayerOverlay inherits Window {
                                     padding-right: 10px;
                                     alignment: space-between;
 
-                                    Text {
-                                        text: track;
-                                        font-size: 12px;
-                                        font-weight: idx == root.selected_subtitle_idx ? 800 : 500;
-                                        color: idx == root.selected_subtitle_idx ? #ffffff : #d8d8de;
-                                        vertical-alignment: center;
-                                        overflow: elide;
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        alignment: start;
+
+                                        Text {
+                                            text: grp.lang;
+                                            font-size: 12px;
+                                            font-weight: 700;
+                                            color: #ffffff;
+                                            vertical-alignment: center;
+                                        }
+
+                                        if grp.has_embedded : VerticalLayout {
+                                            alignment: center;
+                                            Rectangle {
+                                                width: 58px;
+                                                height: 16px;
+                                                border-radius: 3px;
+                                                background: #a855f7;
+                                                Text {
+                                                    text: "EMBEDDED";
+                                                    font-size: 8px;
+                                                    font-weight: 800;
+                                                    color: #ffffff;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+
+                                        if grp.lang == root.active_sub_lang : VerticalLayout {
+                                            alignment: center;
+                                            Rectangle {
+                                                width: 44px;
+                                                height: 16px;
+                                                border-radius: 3px;
+                                                background: Theme.accent;
+                                                Text {
+                                                    text: "ACTIVE";
+                                                    font-size: 8px;
+                                                    font-weight: 800;
+                                                    color: #ffffff;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
                                     }
 
-                                    if idx == root.selected_subtitle_idx : Text {
-                                        text: "✓";
-                                        font-size: 13px;
-                                        font-weight: 800;
-                                        color: #ffffff;
+                                    Text {
+                                        text: grp.count + (grp.count == 1 ? " track ›" : " tracks ›");
+                                        font-size: 11px;
+                                        font-weight: 700;
+                                        color: Theme.text-muted;
                                         vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // STAGE 2: Tracks inside Selected Language Group
+                    if root.language_groups.length > 0 && root.selected_lang_group != "" : VerticalLayout {
+                        width: 100%;
+                        height: 100%;
+                        spacing: 0px;
+
+                        // Header bar to go back to All Languages
+                        Rectangle {
+                            height: 32px;
+                            background: #181a1f;
+
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 10px;
+                                alignment: space-between;
+
+                                Rectangle {
+                                    width: 112px;
+                                    height: 24px;
+                                    y: 4px;
+                                    border-radius: 4px;
+                                    background: back_lang_touch.has-hover ? Theme.accent : #262830;
+
+                                    back_lang_touch := TouchArea {
+                                        width: 100%;
+                                        height: 100%;
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.user_activity();
+                                            root.select_language_group("");
+                                        }
+                                    }
+
+                                    Text {
+                                        text: "‹ All Languages";
+                                        font-size: 11px;
+                                        font-weight: 700;
+                                        color: #ffffff;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                Text {
+                                    text: root.selected_lang_group + " (" + root.visible_subtitles.length + ")";
+                                    font-size: 11px;
+                                    font-weight: 800;
+                                    color: Theme.accent;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: #26272b; }
+
+                        ScrollView {
+                            width: 100%;
+                            height: 143px;
+                            viewport-height: root.visible_subtitles.length * 40px + 12px;
+
+                            VerticalLayout {
+                                alignment: start;
+                                padding: 6px;
+                                spacing: 4px;
+
+                                for sub in root.visible_subtitles : Rectangle {
+                                    height: 36px;
+                                    border-radius: 4px;
+                                    background: sub.idx == root.selected_subtitle_idx ? Theme.accent : (trk_touch.has-hover ? #25272d : #18191c);
+
+                                    trk_touch := TouchArea {
+                                        width: 100%;
+                                        height: 100%;
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.user_activity();
+                                            root.is_subtitle_loading = true;
+                                            root.select_subtitle_track(sub.idx);
+                                        }
+                                    }
+
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+                                        alignment: space-between;
+
+                                        HorizontalLayout {
+                                            spacing: 6px;
+                                            alignment: start;
+
+                                            VerticalLayout {
+                                                alignment: center;
+                                                Rectangle {
+                                                    width: sub.source == "embedded" ? 62px : 48px;
+                                                    height: 18px;
+                                                    border-radius: 3px;
+                                                    background: sub.source == "embedded" ? #a855f7 : #06b6d4;
+                                                    Text {
+                                                        text: sub.source == "embedded" ? "EMBEDDED" : "ADDON";
+                                                        font-size: 9px;
+                                                        font-weight: 800;
+                                                        color: #ffffff;
+                                                        horizontal-alignment: center;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                            }
+
+                                            Text {
+                                                text: sub.label;
+                                                font-size: 11px;
+                                                font-weight: sub.idx == root.selected_subtitle_idx ? 800 : 600;
+                                                color: sub.idx == root.selected_subtitle_idx ? #ffffff : #e2e2e8;
+                                                vertical-alignment: center;
+                                                overflow: elide;
+                                                max-width: 195px;
+                                            }
+                                        }
+
+                                        if sub.idx == root.selected_subtitle_idx : Text {
+                                            text: "✓";
+                                            font-size: 13px;
+                                            font-weight: 800;
+                                            color: #ffffff;
+                                            vertical-alignment: center;
+                                        }
                                     }
                                 }
                             }
@@ -459,71 +865,81 @@ export component PlayerOverlay inherits Window {
 
                 Rectangle { height: 1px; background: #2a2b2e; }
 
-                // Subtitle Size Selection
-                Text {
-                    text: "Subtitle Text Size:";
-                    font-size: 12px;
-                    font-weight: 700;
-                    color: Theme.accent;
-                }
-
+                // Subtitle Size Selection (Compact single-row header + buttons)
                 HorizontalLayout {
-                    spacing: 8px;
-                    alignment: start;
+                    height: 30px;
+                    alignment: space-between;
+                    Text {
+                        text: "Size:";
+                        font-size: 12px;
+                        font-weight: 700;
+                        color: Theme.text-muted;
+                        vertical-alignment: center;
+                    }
 
-                    OverlayButton {
-                        text: "Small";
-                        is_active: root.sub_size == 0;
-                        clicked => { root.user_activity(); root.sub_size_changed(0); }
-                    }
-                    OverlayButton {
-                        text: "Normal";
-                        is_active: root.sub_size == 1;
-                        clicked => { root.user_activity(); root.sub_size_changed(1); }
-                    }
-                    OverlayButton {
-                        text: "Large";
-                        is_active: root.sub_size == 2;
-                        clicked => { root.user_activity(); root.sub_size_changed(2); }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        alignment: end;
+
+                        OverlayButton {
+                            text: "Small";
+                            is_active: root.sub_size == 0;
+                            clicked => { root.user_activity(); root.sub_size_changed(0); }
+                        }
+                        OverlayButton {
+                            text: "Normal";
+                            is_active: root.sub_size == 1;
+                            clicked => { root.user_activity(); root.sub_size_changed(1); }
+                        }
+                        OverlayButton {
+                            text: "Large";
+                            is_active: root.sub_size == 2;
+                            clicked => { root.user_activity(); root.sub_size_changed(2); }
+                        }
                     }
                 }
 
                 // Subtitle Delay Offset
-                Text {
-                    text: "Subtitle Sync Delay:";
-                    font-size: 12px;
-                    font-weight: 700;
-                    color: Theme.accent;
-                }
-
                 HorizontalLayout {
-                    spacing: 8px;
-                    alignment: start;
+                    height: 30px;
+                    alignment: space-between;
+                    Text {
+                        text: "Sync:";
+                        font-size: 12px;
+                        font-weight: 700;
+                        color: Theme.text-muted;
+                        vertical-alignment: center;
+                    }
 
-                    OverlayButton {
-                        text: "-250ms";
-                        clicked => { root.user_activity(); root.sub_delay_adjust(-250); }
-                    }
-                    OverlayButton {
-                        text: "Reset";
-                        clicked => { root.user_activity(); root.sub_delay_adjust(-root.sub_delay_ms); }
-                    }
-                    OverlayButton {
-                        text: "+250ms";
-                        clicked => { root.user_activity(); root.sub_delay_adjust(250); }
-                    }
-                    Rectangle {
-                        width: 80px;
-                        height: 34px;
-                        background: #1c1d20;
-                        border-radius: 6px;
-                        Text {
-                            text: (root.sub_delay_ms >= 0 ? "+" : "") + root.sub_delay_ms + " ms";
-                            font-size: 12px;
-                            font-weight: 700;
-                            color: Theme.text;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
+                    HorizontalLayout {
+                        spacing: 4px;
+                        alignment: end;
+
+                        OverlayButton {
+                            text: "-250ms";
+                            clicked => { root.user_activity(); root.sub_delay_adjust(-250); }
+                        }
+                        OverlayButton {
+                            text: "Reset";
+                            clicked => { root.user_activity(); root.sub_delay_adjust(-root.sub_delay_ms); }
+                        }
+                        OverlayButton {
+                            text: "+250ms";
+                            clicked => { root.user_activity(); root.sub_delay_adjust(250); }
+                        }
+                        Rectangle {
+                            width: 66px;
+                            height: 30px;
+                            background: #1c1d20;
+                            border-radius: 6px;
+                            Text {
+                                text: (root.sub_delay_ms >= 0 ? "+" : "") + root.sub_delay_ms + "ms";
+                                font-size: 11px;
+                                font-weight: 700;
+                                color: Theme.text;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
                         }
                     }
                 }
@@ -690,13 +1106,14 @@ export component PlayerOverlay inherits Window {
                 }
             }
 
-            // Transport buttons row (all 36px+ touch targets)
-            HorizontalLayout {
-                spacing: 8px;
-                alignment: space-between;
+            // Transport buttons row with guaranteed centered play/pause controls
+            Rectangle {
+                height: 38px;
 
                 // Left: Time Text
                 HorizontalLayout {
+                    x: 0px;
+                    y: (parent.height - self.height) / 2;
                     alignment: start;
                     Text {
                         text: root.time_str;
@@ -707,8 +1124,10 @@ export component PlayerOverlay inherits Window {
                     }
                 }
 
-                // Center: Rewind 10s, Play/Pause, Forward 10s, Next Episode
+                // Center: Rewind 10s, Play/Pause, Forward 10s, Next Episode (EXACT HORIZONTAL CENTER)
                 HorizontalLayout {
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
                     spacing: 8px;
                     alignment: center;
 
@@ -751,6 +1170,8 @@ export component PlayerOverlay inherits Window {
 
                 // Right: Subtitles, Volume (Mute + 96px slider + %), Fullscreen
                 HorizontalLayout {
+                    x: parent.width - self.width;
+                    y: (parent.height - self.height) / 2;
                     spacing: 8px;
                     alignment: end;
 
@@ -776,59 +1197,62 @@ export component PlayerOverlay inherits Window {
                             }
                         }
 
-                        // 96x24px interactive volume slider
-                        vol_track := Rectangle {
-                            width: 96px;
-                            height: 24px;
-                            background: #00000000;
+                        // 96x24px interactive volume slider vertically centered with 36px buttons
+                        VerticalLayout {
+                            alignment: center;
+                            vol_track := Rectangle {
+                                width: 96px;
+                                height: 24px;
+                                background: #00000000;
 
-                            vol_touch := TouchArea {
-                                width: 100%;
-                                height: 100%;
-                                mouse-cursor: pointer;
-                                pointer-event(event) => {
-                                    root.user_activity();
-                                }
-                                clicked => {
-                                    root.user_activity();
-                                    if (self.width > 0px) {
-                                        let raw_ratio = max(0.0, min(1.0, self.mouse-x / self.width));
-                                        let pct = round(raw_ratio * 100.0);
-                                        root.volume_set(pct);
+                                vol_touch := TouchArea {
+                                    width: 100%;
+                                    height: 100%;
+                                    mouse-cursor: pointer;
+                                    pointer-event(event) => {
+                                        root.user_activity();
+                                    }
+                                    clicked => {
+                                        root.user_activity();
+                                        if (self.width > 0px) {
+                                            let raw_ratio = max(0.0, min(1.0, self.mouse-x / self.width));
+                                            let pct = round(raw_ratio * 100.0);
+                                            root.volume_set(pct);
+                                        }
                                     }
                                 }
-                            }
 
-                            // Background track (4px tall)
-                            Rectangle {
-                                y: (parent.height - 4px) / 2;
-                                width: 100%;
-                                height: 4px;
-                                background: #252627;
-                                border-radius: 2px;
-                                clip: true;
-
-                                // Fill
+                                // Background track (4px tall)
                                 Rectangle {
-                                    x: 0px;
-                                    y: 0px;
-                                    height: 100%;
-                                    width: (root.is_muted ? 0.0 : (root.volume_percent / 100.0)) * parent.width;
-                                    background: Theme.accent;
+                                    y: (parent.height - 4px) / 2;
+                                    width: 100%;
+                                    height: 4px;
+                                    background: #252627;
                                     border-radius: 2px;
-                                }
-                            }
+                                    clip: true;
 
-                            // Thumb handle
-                            Rectangle {
-                                x: max(0px, min(parent.width - 10px, (root.is_muted ? 0.0 : (root.volume_percent / 100.0)) * parent.width - 5px));
-                                y: (parent.height - 10px) / 2;
-                                width: 10px;
-                                height: 10px;
-                                border-radius: 5px;
-                                background: #ffffff;
-                                border-width: 1px;
-                                border-color: Theme.accent;
+                                    // Fill
+                                    Rectangle {
+                                        x: 0px;
+                                        y: 0px;
+                                        height: 100%;
+                                        width: (root.is_muted ? 0.0 : (root.volume_percent / 100.0)) * parent.width;
+                                        background: Theme.accent;
+                                        border-radius: 2px;
+                                    }
+                                }
+
+                                // Thumb handle
+                                Rectangle {
+                                    x: max(0px, min(parent.width - 10px, (root.is_muted ? 0.0 : (root.volume_percent / 100.0)) * parent.width - 5px));
+                                    y: (parent.height - 10px) / 2;
+                                    width: 10px;
+                                    height: 10px;
+                                    border-radius: 5px;
+                                    background: #ffffff;
+                                    border-width: 1px;
+                                    border-color: Theme.accent;
+                                }
                             }
                         }
 

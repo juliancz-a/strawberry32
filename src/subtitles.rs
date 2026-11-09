@@ -120,22 +120,53 @@ pub fn find_bundled_subtitles(files: &[(usize, String, u64)]) -> Vec<BundledSubt
     for (idx, filename, _) in files {
         let lower = filename.to_lowercase();
         if sub_exts.iter().any(|ext| lower.ends_with(ext)) {
-            // Extract language from filename tokens (e.g., "movie.en.srt", "movie.spanish.vtt")
-            let lang = if lower.contains(".es.") || lower.contains(".spa.") || lower.contains("spanish") {
-                "spa".to_string()
-            } else if lower.contains(".fr.") || lower.contains(".fre.") || lower.contains("french") {
-                "fre".to_string()
-            } else if lower.contains(".de.") || lower.contains(".ger.") || lower.contains("german") {
-                "ger".to_string()
-            } else if lower.contains(".it.") || lower.contains(".ita.") || lower.contains("italian") {
-                "ita".to_string()
-            } else if lower.contains(".pt.") || lower.contains(".por.") || lower.contains("portuguese") {
-                "por".to_string()
-            } else if lower.contains(".ru.") || lower.contains(".rus.") || lower.contains("russian") {
-                "rus".to_string()
-            } else {
-                "eng".to_string()
-            };
+            // Extract clean language from filename tokens
+            let clean_path = lower.replace('\\', "/");
+            let file_part = clean_path.split('/').last().unwrap_or(&lower);
+            let tokens: Vec<&str> = file_part
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|s| !s.is_empty())
+                .collect();
+
+            let mut lang = "eng".to_string();
+            let mut matched = false;
+
+            for t in &tokens {
+                match *t {
+                    "es" | "spa" | "spanish" | "esp" | "castellano" => { lang = "spa".to_string(); matched = true; break; }
+                    "pb" | "pob" | "ptbr" | "brazilian" => { lang = "pob".to_string(); matched = true; break; }
+                    "pt" | "por" | "portuguese" => { lang = "por".to_string(); matched = true; break; }
+                    "fr" | "fre" | "fra" | "french" | "francais" => { lang = "fre".to_string(); matched = true; break; }
+                    "de" | "ger" | "deu" | "german" | "deutsch" => { lang = "ger".to_string(); matched = true; break; }
+                    "it" | "ita" | "italian" | "italiano" => { lang = "ita".to_string(); matched = true; break; }
+                    "ru" | "rus" | "russian" => { lang = "rus".to_string(); matched = true; break; }
+                    "nl" | "dut" | "nld" | "dutch" => { lang = "dut".to_string(); matched = true; break; }
+                    "pl" | "pol" | "polish" => { lang = "pol".to_string(); matched = true; break; }
+                    "tr" | "tur" | "turkish" => { lang = "tur".to_string(); matched = true; break; }
+                    "ar" | "ara" | "arabic" => { lang = "ara".to_string(); matched = true; break; }
+                    "zh" | "chi" | "zho" | "chinese" => { lang = "chi".to_string(); matched = true; break; }
+                    "ja" | "jpn" | "japanese" => { lang = "jpn".to_string(); matched = true; break; }
+                    "ko" | "kor" | "korean" => { lang = "kor".to_string(); matched = true; break; }
+                    "sv" | "swe" | "swedish" => { lang = "swe".to_string(); matched = true; break; }
+                    "da" | "dan" | "danish" => { lang = "dan".to_string(); matched = true; break; }
+                    "no" | "nor" | "norwegian" => { lang = "nor".to_string(); matched = true; break; }
+                    "fi" | "fin" | "finnish" => { lang = "fin".to_string(); matched = true; break; }
+                    "el" | "ell" | "greek" => { lang = "ell".to_string(); matched = true; break; }
+                    "ro" | "rum" | "ron" | "romanian" => { lang = "rum".to_string(); matched = true; break; }
+                    "cs" | "cze" | "ces" | "czech" => { lang = "cze".to_string(); matched = true; break; }
+                    "hu" | "hun" | "hungarian" => { lang = "hun".to_string(); matched = true; break; }
+                    "uk" | "ukr" | "ukrainian" => { lang = "ukr".to_string(); matched = true; break; }
+                    "hi" | "hin" | "hindi" => { lang = "hin".to_string(); matched = true; break; }
+                    "en" | "eng" | "english" => { lang = "eng".to_string(); matched = true; break; }
+                    _ => {}
+                }
+            }
+
+            if !matched {
+                if file_part.contains("spanish") || file_part.contains("espa") {
+                    lang = "spa".to_string();
+                }
+            }
 
             log_info(&format!("Found bundled torrent subtitle: {} (lang: {})", filename, lang));
             list.push(BundledSubtitle {
@@ -149,33 +180,63 @@ pub fn find_bundled_subtitles(files: &[(usize, String, u64)]) -> Vec<BundledSubt
     list
 }
 
-pub fn clean_language_name(code: &str) -> &'static str {
-    match code.to_lowercase().as_str() {
-        "en" | "eng" | "english" => "English",
-        "es" | "spa" | "spanish" | "es-es" | "es-419" => "Español",
-        "fr" | "fre" | "fra" | "french" => "Français",
-        "de" | "ger" | "deu" | "german" => "Deutsch",
-        "it" | "ita" | "italian" => "Italiano",
-        "pt" | "por" | "portuguese" | "pt-br" => "Português",
-        "ru" | "rus" | "russian" => "Русский",
-        "nl" | "dut" | "nld" | "dutch" => "Nederlands",
-        "pl" | "pol" | "polish" => "Polski",
-        "tr" | "tur" | "turkish" => "Türkçe",
-        "ar" | "ara" | "arabic" => "العربية",
-        "zh" | "chi" | "zho" | "chinese" => "Chinese",
-        "ja" | "jpn" | "japanese" => "Japanese",
-        "ko" | "kor" | "korean" => "Korean",
-        "sv" | "swe" | "swedish" => "Svenska",
-        "da" | "dan" | "danish" => "Dansk",
-        "no" | "nor" | "norwegian" => "Norsk",
-        "fi" | "fin" | "finnish" => "Suomi",
-        "el" | "ell" | "greek" => "Ελληνικά",
-        "ro" | "rum" | "ron" | "romanian" => "Română",
-        "cs" | "cze" | "ces" | "czech" => "Čeština",
-        "hu" | "hun" | "hungarian" => "Magyar",
-        "uk" | "ukr" | "ukrainian" => "Українська",
-        "hi" | "hin" | "hindi" => "हिन्दी",
-        _ => "Subtitle",
+pub fn clean_language_name(code: &str) -> String {
+    let lower = code.trim().to_lowercase();
+    match lower.as_str() {
+        "en" | "eng" | "english" => "English".to_string(),
+        "es" | "spa" | "spanish" | "es-es" | "es-419" | "castellano" | "es-la" | "esp" => "Spanish".to_string(),
+        "pt" | "por" | "portuguese" | "pt-pt" => "Portuguese".to_string(),
+        "pb" | "pob" | "pt-br" | "brazilian" | "portuguese (brazil)" => "Portuguese (BR)".to_string(),
+        "fr" | "fre" | "fra" | "french" | "français" => "French".to_string(),
+        "de" | "ger" | "deu" | "german" | "deutsch" => "German".to_string(),
+        "it" | "ita" | "italian" | "italiano" => "Italian".to_string(),
+        "ru" | "rus" | "russian" | "русский" => "Russian".to_string(),
+        "nl" | "dut" | "nld" | "dutch" | "nederlands" => "Dutch".to_string(),
+        "pl" | "pol" | "polish" | "polski" => "Polish".to_string(),
+        "tr" | "tur" | "turkish" | "türkçe" => "Turkish".to_string(),
+        "ar" | "ara" | "arabic" | "العربية" => "Arabic".to_string(),
+        "zh" | "chi" | "zho" | "chinese" | "mandarin" | "zh-cn" | "zh-tw" => "Chinese".to_string(),
+        "ja" | "jpn" | "japanese" | "日本語" => "Japanese".to_string(),
+        "ko" | "kor" | "korean" | "한국어" => "Korean".to_string(),
+        "sv" | "swe" | "swedish" | "svenska" => "Swedish".to_string(),
+        "da" | "dan" | "danish" | "dansk" => "Danish".to_string(),
+        "no" | "nor" | "norwegian" | "norsk" => "Norwegian".to_string(),
+        "fi" | "fin" | "finnish" | "suomi" => "Finnish".to_string(),
+        "el" | "ell" | "greek" | "ελληνικά" => "Greek".to_string(),
+        "ro" | "rum" | "ron" | "romanian" | "română" => "Romanian".to_string(),
+        "cs" | "cze" | "ces" | "czech" | "čeština" => "Czech".to_string(),
+        "hu" | "hun" | "hungarian" | "magyar" => "Hungarian".to_string(),
+        "uk" | "ukr" | "ukrainian" | "українська" => "Ukrainian".to_string(),
+        "hi" | "hin" | "hindi" | "हिन्दी" => "Hindi".to_string(),
+        "id" | "ind" | "indonesian" => "Indonesian".to_string(),
+        "vi" | "vie" | "vietnamese" => "Vietnamese".to_string(),
+        "th" | "tha" | "thai" => "Thai".to_string(),
+        "he" | "heb" | "hebrew" => "Hebrew".to_string(),
+        "fa" | "fas" | "per" | "persian" | "farsi" => "Persian".to_string(),
+        "tl" | "tgl" | "fil" | "tagalog" | "filipino" => "Tagalog".to_string(),
+        "ms" | "msa" | "may" | "malay" => "Malay".to_string(),
+        "hr" | "hrv" | "croatian" => "Croatian".to_string(),
+        "sr" | "srp" | "serbian" => "Serbian".to_string(),
+        "bg" | "bul" | "bulgarian" => "Bulgarian".to_string(),
+        "sk" | "slk" | "slo" | "slovak" => "Slovak".to_string(),
+        "sl" | "slv" | "slovenian" => "Slovenian".to_string(),
+        "et" | "est" | "estonian" => "Estonian".to_string(),
+        "lv" | "lav" | "latvian" => "Latvian".to_string(),
+        "lt" | "lit" | "lithuanian" => "Lithuanian".to_string(),
+        _ => {
+            // Never return generic "Subtitle"! Capitalize the raw code or name
+            if lower.is_empty() {
+                "Unknown".to_string()
+            } else if lower.len() <= 3 {
+                lower.to_uppercase()
+            } else {
+                let mut c = lower.chars();
+                match c.next() {
+                    None => "Unknown".to_string(),
+                    Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                }
+            }
+        }
     }
 }
 
@@ -290,23 +351,26 @@ pub fn fetch_subtitle_tracks(
         }
     }
 
-    // Format clean language labels: "English #1", "Español #1", etc.
+    // Format clean language labels: "Spanish #1 [SRT]", "English #2 [VTT]", etc.
     let mut lang_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut tracks = Vec::new();
 
     for (id, lang_code, url) in raw_tracks {
         let clean_name = clean_language_name(&lang_code);
-        let count = lang_counts.entry(clean_name.to_string()).or_insert(0);
+        let count = lang_counts.entry(clean_name.clone()).or_insert(0);
         *count += 1;
-        let formatted_label = format!("{} #{}", clean_name, count);
+        let badge = get_sub_format_badge(&url);
+        let formatted_label = format!("{} #{} {}", clean_name, count, badge);
         tracks.push(SubtitleTrack {
             id,
-            lang: formatted_label,
+            lang: clean_name,
+            label: formatted_label,
+            source: "addon".to_string(),
             url,
         });
     }
 
-    log_info(&format!("Discovered {} deduplicated subtitle tracks.", tracks.len()));
+    log_info(&format!("Discovered {} deduplicated addon subtitle tracks.", tracks.len()));
     Ok(tracks)
 }
 

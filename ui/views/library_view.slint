@@ -12,7 +12,6 @@ export component LibraryView inherits Rectangle {
     background: Theme.bg;
 
     VerticalLayout {
-        alignment: start;
         padding-left: 20px;
         padding-right: 20px;
         padding-top: 16px;
@@ -114,8 +113,11 @@ export component LibraryView inherits Rectangle {
         }
 
         if root.library_items.length > 0 : ScrollView {
+            vertical-stretch: 1;
             VerticalLayout {
-                alignment: start;
+                spacing: 16px;
+                padding-bottom: 24px;
+
                 CatalogRow {
                     title: "Continue Watching (" + root.library_items.length + ")";
                     items: root.library_items;
