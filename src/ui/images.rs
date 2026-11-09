@@ -159,7 +159,7 @@ fn process_image_request(url: &str, target_w: u32, target_h: u32) -> Option<Shar
     };
 
     // 1. Check RAM cache first
-    let cache_key = format!("{}_{}x{}", fnv1a_hash(&effective_url), target_w, target_h);
+    let cache_key = format!("v2_{}_{}x{}", fnv1a_hash(&effective_url), target_w, target_h);
     {
         let mut guard = RAM_CACHE.lock().unwrap();
         if let Some(cache) = guard.as_mut() {
@@ -230,7 +230,54 @@ fn process_image_request(url: &str, target_w: u32, target_h: u32) -> Option<Shar
             // 5. Downsample using fast Triangle (bilinear) filter (fast on Cortex-A9 Tegra 3)
             let t_res = std::time::Instant::now();
             let resized = dyn_img.resize_exact(target_w, target_h, FilterType::Triangle);
-            let rgba = resized.to_rgba8();
+            let mut rgba = resized.to_rgba8();
+
+            // Pre-bake 6px rounded-corner alpha mask directly into raw RGBA bytes
+            // Eliminates per-pixel software clipping in Slint software renderer
+            let radius = 6.0f32;
+            let (w_f, h_f) = (target_w as f32, target_h as f32);
+            if target_w > 12 && target_h > 12 {
+                for y in 0..target_h {
+                    let y_f = y as f32 + 0.5;
+                    for x in 0..target_w {
+                        let x_f = x as f32 + 0.5;
+                        let mut corner_dist = None;
+                        if x_f < radius && y_f < radius {
+                            // Top-left
+                            let dx = radius - x_f;
+                            let dy = radius - y_f;
+                            corner_dist = Some((dx * dx + dy * dy).sqrt());
+                        } else if x_f > w_f - radius && y_f < radius {
+                            // Top-right
+                            let dx = x_f - (w_f - radius);
+                            let dy = radius - y_f;
+                            corner_dist = Some((dx * dx + dy * dy).sqrt());
+                        } else if x_f < radius && y_f > h_f - radius {
+                            // Bottom-left
+                            let dx = radius - x_f;
+                            let dy = y_f - (h_f - radius);
+                            corner_dist = Some((dx * dx + dy * dy).sqrt());
+                        } else if x_f > w_f - radius && y_f > h_f - radius {
+                            // Bottom-right
+                            let dx = x_f - (w_f - radius);
+                            let dy = y_f - (h_f - radius);
+                            corner_dist = Some((dx * dx + dy * dy).sqrt());
+                        }
+
+                        if let Some(dist) = corner_dist {
+                            if dist > radius {
+                                let p = rgba.get_pixel_mut(x, y);
+                                p[3] = 0;
+                            } else if dist > radius - 1.0 {
+                                let alpha_factor = (radius - dist).clamp(0.0, 1.0);
+                                let p = rgba.get_pixel_mut(x, y);
+                                p[3] = ((p[3] as f32) * alpha_factor) as u8;
+                            }
+                        }
+                    }
+                }
+            }
+
             let raw_rgba_bytes = rgba.into_raw();
             let res_ms = t_res.elapsed().as_millis() as u64;
 
@@ -305,7 +352,7 @@ where
         url
     };
 
-    let cache_key = format!("{}_{}x{}", fnv1a_hash(&effective_url), target_width, target_height);
+    let cache_key = format!("v2_{}_{}x{}", fnv1a_hash(&effective_url), target_width, target_height);
     {
         let mut guard = RAM_CACHE.lock().unwrap();
         if let Some(cache) = guard.as_mut() {

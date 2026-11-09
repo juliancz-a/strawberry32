@@ -35,14 +35,13 @@ export component PosterCard inherits Rectangle {
             width: root.card_size == "s" ? 108px : (root.card_size == "l" ? 154px : 130px);
             height: root.card_size == "s" ? 164px : (root.card_size == "l" ? 232px : 196px);
             background: Theme.surface-raised;
-            border-radius: 6px;
-            clip: true;
+            border-radius: root.has_poster ? 0px : 6px;
 
             if root.has_poster : Image {
                 source: root.poster;
                 width: 100%;
                 height: 100%;
-                image-fit: cover;
+                image-fit: fill;
             }
 
             if !root.has_poster : VerticalLayout {

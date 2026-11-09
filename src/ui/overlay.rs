@@ -59,28 +59,38 @@ pub fn update_overlay_region(hwnd: HWND, width: i32, height: i32, controls_visib
             CombineRgn(combined_rgn, combined_rgn, top_rgn, RGN_OR);
             DeleteObject(top_rgn as HGDIOBJ);
 
-            // Bottom transport bar rect: 0..width, (height - bot_h)..height
-            // If subtitles are active, bottom bar expands to 106px to cleanly house the subtitle
-            let bot_h = if has_subtitle { 106 } else { 74 };
-            let bottom_y = (height - bot_h).max(0);
+            // Bottom transport bar rect: 0..width, (height - 74)..height
+            let bottom_y = (height - 74).max(0);
             let bottom_rgn = CreateRectRgn(0, bottom_y, width, height);
             CombineRgn(combined_rgn, combined_rgn, bottom_rgn, RGN_OR);
             DeleteObject(bottom_rgn as HGDIOBJ);
 
-            // Side panel rect if open (width - 340 .. width, 50 .. height - bot_h)
+            // Subtitle rect if active (width: 700px centered, height: 44px at height - 124)
+            if has_subtitle {
+                let sub_w = 700.min(width - 40);
+                let sub_x = (width - sub_w) / 2;
+                let sub_y = (height - 124).max(0);
+                let sub_rgn = CreateRectRgn(sub_x, sub_y, sub_x + sub_w, sub_y + 44);
+                CombineRgn(combined_rgn, combined_rgn, sub_rgn, RGN_OR);
+                DeleteObject(sub_rgn as HGDIOBJ);
+            }
+
+            // Side panel rect if open (width - 340 .. width, 50 .. height - 74)
             if active_panel > 0 {
                 let panel_w = 340.min(width);
                 let panel_x = width - panel_w;
                 let panel_y = 50;
-                let panel_h = (height - bot_h - 50).max(100);
+                let panel_h = (height - 74 - 50).max(100);
                 let panel_rgn = CreateRectRgn(panel_x, panel_y, width, panel_y + panel_h);
                 CombineRgn(combined_rgn, combined_rgn, panel_rgn, RGN_OR);
                 DeleteObject(panel_rgn as HGDIOBJ);
             }
         } else if has_subtitle {
-            // Full-width subtitle banner at bottom: 0..width, (height - 52)..height
-            let sub_y = (height - 52).max(0);
-            let sub_rgn = CreateRectRgn(0, sub_y, width, height);
+            // Subtitle rect when controls hidden: EXACT SAME POSITION AND SIZE! Zero jumping!
+            let sub_w = 700.min(width - 40);
+            let sub_x = (width - sub_w) / 2;
+            let sub_y = (height - 124).max(0);
+            let sub_rgn = CreateRectRgn(sub_x, sub_y, sub_x + sub_w, sub_y + 44);
             CombineRgn(combined_rgn, combined_rgn, sub_rgn, RGN_OR);
             DeleteObject(sub_rgn as HGDIOBJ);
         }

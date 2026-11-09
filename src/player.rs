@@ -3,6 +3,7 @@ use crate::subtitles;
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, FALSE, HWND};
 use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
@@ -117,6 +118,10 @@ unsafe impl Send for EmbeddedPlayerState {}
 unsafe impl Sync for EmbeddedPlayerState {}
 
 static EMBEDDED_PLAYER: Mutex<Option<EmbeddedPlayerState>> = Mutex::new(None);
+static CURRENT_STREAM_URL: Mutex<String> = Mutex::new(String::new());
+static IS_MKV_STREAM: AtomicBool = AtomicBool::new(false);
+static KNOWN_DURATION_MS: AtomicU64 = AtomicU64::new(0);
+static SEEK_BASE_OFFSET_MS: AtomicU64 = AtomicU64::new(0);
 static MF_INITIALIZED: Mutex<bool> = Mutex::new(false);
 
 pub fn ensure_mf_started() {
@@ -193,6 +198,13 @@ fn init_media_foundation_player(video_hwnd: HWND, stream_url: &str) -> Result<*m
 pub fn init_embedded_player(video_hwnd: HWND, stream_url: &str) -> Result<(), String> {
     stop_embedded_player();
     ensure_mf_started();
+
+    *CURRENT_STREAM_URL.lock().unwrap() = stream_url.to_string();
+    let is_mkv = stream_url.to_lowercase().contains(".mkv") || stream_url.contains(":3031/play/");
+    IS_MKV_STREAM.store(is_mkv, Ordering::SeqCst);
+    if !stream_url.contains("start=") {
+        SEEK_BASE_OFFSET_MS.store(0, Ordering::SeqCst);
+    }
 
     unsafe {
         const S_OK: HRESULT = 0;
@@ -394,6 +406,30 @@ pub fn set_playback_rate(rate: f32) -> Result<(), String> {
 
 /// Seeks relative seconds (e.g. -15 or +30)
 pub fn seek_relative(seconds: i32) -> Result<(), String> {
+    let is_mkv = IS_MKV_STREAM.load(Ordering::SeqCst);
+    if is_mkv {
+        let (pos_ms, dur_ms, _) = get_playback_progress();
+        let delta_ms = (seconds as i64) * 1000;
+        let mut target_ms = (pos_ms as i64 + delta_ms).max(0) as u64;
+        if dur_ms > 0 && target_ms > dur_ms {
+            target_ms = dur_ms;
+        }
+        let (video_hwnd, current_url) = {
+            let guard = EMBEDDED_PLAYER.lock().unwrap();
+            if let Some(state) = guard.as_ref() {
+                let url = CURRENT_STREAM_URL.lock().unwrap().clone();
+                (state.video_hwnd, url)
+            } else {
+                return Err("No active player".to_string());
+            }
+        };
+        let clean_url = current_url.split('?').next().unwrap_or(&current_url);
+        let new_url = format!("{}?start={}", clean_url, target_ms);
+        SEEK_BASE_OFFSET_MS.store(target_ms, Ordering::SeqCst);
+        log_player(&format!("[MKV SEEK RELATIVE] Reconnecting player to {} (delta: {}s, target: {} ms)", new_url, seconds, target_ms));
+        return init_embedded_player(video_hwnd, &new_url);
+    }
+
     let guard = EMBEDDED_PLAYER.lock().unwrap();
     if let Some(state) = guard.as_ref() {
         unsafe {
@@ -434,11 +470,22 @@ pub fn get_playback_progress() -> (u64, u64, f32) {
                 let mut pv_dur: PROPVARIANT = std::mem::zeroed();
                 let hr_cur = com_call_2(state.p_player, 8, &GUID_NULL as *const GUID as *const c_void, &mut pv_cur as *mut PROPVARIANT as *mut c_void);
                 let hr_dur = com_call_2(state.p_player, 9, &GUID_NULL as *const GUID as *const c_void, &mut pv_dur as *mut PROPVARIANT as *mut c_void);
-                if hr_cur >= 0 && hr_dur >= 0 && pv_dur.hVal > 0 {
-                    let pos_ms = (pv_cur.hVal.max(0) / 10_000) as u64;
-                    let dur_ms = (pv_dur.hVal.max(0) / 10_000) as u64;
-                    let ratio = (pv_cur.hVal as f64 / pv_dur.hVal as f64).clamp(0.0, 1.0) as f32;
-                    return (pos_ms, dur_ms, ratio);
+                if hr_cur >= 0 && hr_dur >= 0 {
+                    let base_offset = SEEK_BASE_OFFSET_MS.load(Ordering::SeqCst);
+                    let raw_pos_ms = (pv_cur.hVal.max(0) / 10_000) as u64;
+                    let raw_dur_ms = (pv_dur.hVal.max(0) / 10_000) as u64;
+                    let known_dur = KNOWN_DURATION_MS.load(Ordering::SeqCst);
+                    let effective_dur = known_dur.max(raw_dur_ms);
+                    if raw_dur_ms > 0 && known_dur < raw_dur_ms {
+                        KNOWN_DURATION_MS.store(raw_dur_ms, Ordering::SeqCst);
+                    }
+                    let effective_pos = raw_pos_ms + base_offset;
+                    let ratio = if effective_dur > 0 {
+                        (effective_pos as f64 / effective_dur as f64).clamp(0.0, 1.0) as f32
+                    } else {
+                        0.0
+                    };
+                    return (effective_pos, effective_dur, ratio);
                 }
             }
         }
@@ -448,6 +495,26 @@ pub fn get_playback_progress() -> (u64, u64, f32) {
 
 /// Seeks to absolute percentage (0.0 to 1.0)
 pub fn seek_percent(pct: f32) -> Result<(), String> {
+    let is_mkv = IS_MKV_STREAM.load(Ordering::SeqCst);
+    if is_mkv {
+        let (video_hwnd, current_url) = {
+            let guard = EMBEDDED_PLAYER.lock().unwrap();
+            if let Some(state) = guard.as_ref() {
+                let url = CURRENT_STREAM_URL.lock().unwrap().clone();
+                (state.video_hwnd, url)
+            } else {
+                return Err("No active player".to_string());
+            }
+        };
+        let dur_ms = KNOWN_DURATION_MS.load(Ordering::SeqCst);
+        let target_ms = ((dur_ms as f64) * (pct.clamp(0.0, 1.0) as f64)) as u64;
+        let clean_url = current_url.split('?').next().unwrap_or(&current_url);
+        let new_url = format!("{}?start={}", clean_url, target_ms);
+        SEEK_BASE_OFFSET_MS.store(target_ms, Ordering::SeqCst);
+        log_player(&format!("[MKV SEEK PERCENT] Reconnecting player to {} (pct: {:.1}%, target: {} ms)", new_url, pct * 100.0, target_ms));
+        return init_embedded_player(video_hwnd, &new_url);
+    }
+
     let guard = EMBEDDED_PLAYER.lock().unwrap();
     if let Some(state) = guard.as_ref() {
         unsafe {

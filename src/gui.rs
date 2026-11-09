@@ -44,6 +44,88 @@ static CURRENT_HERO_IDX: Mutex<usize> = Mutex::new(0);
 static CURRENT_SERIES_VIDEOS: Mutex<Vec<state::MetaVideo>> = Mutex::new(Vec::new());
 static NEXT_EPISODE_TARGET: Mutex<Option<(u32, u32)>> = Mutex::new(None);
 static AUTOPLAY_TRIGGERED: Mutex<bool> = Mutex::new(false);
+static HOME_RAW_ROWS: Mutex<Vec<Vec<addons::MetaItem>>> = Mutex::new(Vec::new());
+static HOME_ROW_OFFSETS: Mutex<[usize; 6]> = Mutex::new([0; 6]);
+
+pub fn update_home_row_slice(ui: &MainWindow, row_idx: usize) {
+    let guard = HOME_RAW_ROWS.lock().unwrap();
+    if row_idx >= guard.len() {
+        return;
+    }
+    let full_row = &guard[row_idx];
+    let total = full_row.len();
+    if total == 0 {
+        return;
+    }
+    let offsets = HOME_ROW_OFFSETS.lock().unwrap();
+    let offset = offsets[row_idx];
+    drop(offsets);
+
+    let page_size = 6;
+    let end = (offset + page_size).min(total);
+    let slice: Vec<CatalogItem> = full_row[offset..end].iter().map(meta_to_catalog_item).collect();
+    let indicator = format!("{}–{} of {}", offset + 1, end, total);
+
+    let model = ModelRc::from(Rc::new(VecModel::from(slice)));
+    match row_idx {
+        0 => {
+            ui.set_home_row1(model);
+            ui.set_home_row1_indicator(indicator.into());
+        }
+        1 => {
+            ui.set_home_row2(model);
+            ui.set_home_row2_indicator(indicator.into());
+        }
+        2 => {
+            ui.set_home_row3(model);
+            ui.set_home_row3_indicator(indicator.into());
+        }
+        3 => {
+            ui.set_home_row4(model);
+            ui.set_home_row4_indicator(indicator.into());
+        }
+        4 => {
+            ui.set_home_row5(model);
+            ui.set_home_row5_indicator(indicator.into());
+        }
+        5 => {
+            ui.set_home_row6(model);
+            ui.set_home_row6_indicator(indicator.into());
+        }
+        _ => {}
+    }
+    ui.invoke_request_lazy_range(row_idx as i32, 0, 6);
+}
+
+pub fn step_home_row_page(ui: &MainWindow, row_idx: usize, forward: bool) {
+    let total = {
+        let guard = HOME_RAW_ROWS.lock().unwrap();
+        if row_idx >= guard.len() {
+            return;
+        }
+        guard[row_idx].len()
+    };
+    if total <= 6 {
+        return;
+    }
+    let page_size = 6;
+    let mut offsets = HOME_ROW_OFFSETS.lock().unwrap();
+    if forward {
+        if offsets[row_idx] + page_size < total {
+            offsets[row_idx] += page_size;
+        } else {
+            offsets[row_idx] = 0;
+        }
+    } else {
+        if offsets[row_idx] >= page_size {
+            offsets[row_idx] -= page_size;
+        } else {
+            offsets[row_idx] = (total.saturating_sub(1) / page_size) * page_size;
+        }
+    }
+    drop(offsets);
+    update_home_row_slice(ui, row_idx);
+}
 
 fn cache_insert_all(items: impl IntoIterator<Item = addons::MetaItem>) {
     let mut guard = CATALOG_CACHE.lock().unwrap();
@@ -397,6 +479,10 @@ pub fn load_multi_row_home_catalog(app_weak: slint::Weak<MainWindow>) {
                 .cloned(),
         );
 
+        // Store full catalog items (up to 100 per row) in memory for zero-lag virtual paging
+        *HOME_RAW_ROWS.lock().unwrap() = vec![r1.clone(), r2.clone(), r3.clone(), r4.clone(), r5.clone(), r6.clone()];
+        *HOME_ROW_OFFSETS.lock().unwrap() = [0; 6];
+
         // Store top 5 trending for hero banner
         let hero_candidates: Vec<addons::MetaItem> = r1.iter().take(5).cloned().collect();
         *HERO_ITEMS.lock().unwrap() = hero_candidates.clone();
@@ -410,19 +496,10 @@ pub fn load_multi_row_home_catalog(app_weak: slint::Weak<MainWindow>) {
                 ui.set_is_app_initializing(false);
                 ui.set_is_catalog_loading(false);
 
-                let items1: Vec<CatalogItem> = r1.iter().take(24).map(meta_to_catalog_item).collect();
-                let items2: Vec<CatalogItem> = r2.iter().take(24).map(meta_to_catalog_item).collect();
-                let items3: Vec<CatalogItem> = r3.iter().take(24).map(meta_to_catalog_item).collect();
-                let items4: Vec<CatalogItem> = r4.iter().take(24).map(meta_to_catalog_item).collect();
-                let items5: Vec<CatalogItem> = r5.iter().take(24).map(meta_to_catalog_item).collect();
-                let items6: Vec<CatalogItem> = r6.iter().take(24).map(meta_to_catalog_item).collect();
-
-                ui.set_home_row1(ModelRc::from(Rc::new(VecModel::from(items1))));
-                ui.set_home_row2(ModelRc::from(Rc::new(VecModel::from(items2))));
-                ui.set_home_row3(ModelRc::from(Rc::new(VecModel::from(items3))));
-                ui.set_home_row4(ModelRc::from(Rc::new(VecModel::from(items4))));
-                ui.set_home_row5(ModelRc::from(Rc::new(VecModel::from(items5))));
-                ui.set_home_row6(ModelRc::from(Rc::new(VecModel::from(items6))));
+                // Populate each row with its currently visible 6-card slice
+                for r in 0..6 {
+                    update_home_row_slice(&ui, r);
+                }
 
                 // Setup Initial Hero Banner
                 if let Some(hero) = first_hero {
@@ -454,15 +531,9 @@ pub fn load_multi_row_home_catalog(app_weak: slint::Weak<MainWindow>) {
 
                 ui.set_status_text("Home catalog ready: 6 categories loaded.".into());
 
-                // Trigger progressive loading of posters for all 6 rows:
-                // Phase 1: Immediately visible posters (0..8) across all rows load first with highest priority
-                for r in 0..6 {
-                    ui.invoke_request_lazy_range(r, 0, 8);
-                }
-                // Phase 2: Remaining offscreen / horizontally scrollable posters (8..100) are queued right after
-                // so the background worker threads seamlessly download and cache them before the user scrolls
-                for r in 0..6 {
-                    ui.invoke_request_lazy_range(r, 8, 100);
+                // Request posters only for the currently visible top rows (0..2), eliminating initial repaint storms
+                for r in 0..3 {
+                    ui.invoke_request_lazy_range(r, 0, 6);
                 }
             }
         });
@@ -1040,6 +1111,21 @@ pub fn run_app() -> Result<(), String> {
     app.on_hero_next(move || {
         if let Some(ui) = app_weak_hn.upgrade() {
             rotate_hero(&ui, 1);
+        }
+    });
+
+    // 5b. Home Row Virtualized Paging Callbacks
+    let app_weak_hrp = app.as_weak();
+    app.on_home_row_prev_page(move |row_idx| {
+        if let Some(ui) = app_weak_hrp.upgrade() {
+            step_home_row_page(&ui, row_idx as usize, false);
+        }
+    });
+
+    let app_weak_hrn = app.as_weak();
+    app.on_home_row_next_page(move |row_idx| {
+        if let Some(ui) = app_weak_hrn.upgrade() {
+            step_home_row_page(&ui, row_idx as usize, true);
         }
     });
 
@@ -1960,6 +2046,7 @@ pub fn run_app() -> Result<(), String> {
                         "{:.2} MB ({}s / 60s)",
                         stream_status.progress_mb, stream_status.elapsed_secs
                     ).into());
+                    ui.set_player_progress_val(stream_status.progress_ratio);
                 }
 
                 let slint_hwnd = get_slint_hwnd(&ui.window());

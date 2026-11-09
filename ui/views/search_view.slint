@@ -14,6 +14,12 @@ export component SearchView inherits Rectangle {
     in property <[CatalogItem]> home_row2: [];
     in property <[CatalogItem]> home_row3: [];
     in property <[CatalogItem]> home_row4: [];
+    in property <string> home_row1_indicator: "";
+    in property <string> home_row2_indicator: "";
+    in property <string> home_row3_indicator: "";
+    in property <string> home_row4_indicator: "";
+    in property <string> movie_indicator: "";
+    in property <string> series_indicator: "";
     in property <bool> is_searching: false;
     in property <string> card_size: "m";
 
@@ -24,6 +30,8 @@ export component SearchView inherits Rectangle {
     callback sort_order_toggled(bool);
     callback card_selected(string, string);
     callback request_lazy_range(int, int, int);
+    callback prev_page(int);
+    callback next_page(int);
 
     background: Theme.bg;
 
@@ -346,12 +354,15 @@ export component SearchView inherits Rectangle {
                     items: root.movie_results;
                     row_index: 10;
                     card_size: root.card_size;
+                    page_indicator: root.movie_indicator;
                     card_clicked(id, type) => {
                         root.card_selected(id, type);
                     }
                     request_lazy_range(row, start, end) => {
                         root.request_lazy_range(row, start, end);
                     }
+                    prev_page(row) => { root.prev_page(row); }
+                    next_page(row) => { root.next_page(row); }
                 }
 
                 if (root.active_filter == "all" || root.active_filter == "series") && root.series_results.length > 0 : CatalogRow {
@@ -359,12 +370,15 @@ export component SearchView inherits Rectangle {
                     items: root.series_results;
                     row_index: 11;
                     card_size: root.card_size;
+                    page_indicator: root.series_indicator;
                     card_clicked(id, type) => {
                         root.card_selected(id, type);
                     }
                     request_lazy_range(row, start, end) => {
                         root.request_lazy_range(row, start, end);
                     }
+                    prev_page(row) => { root.prev_page(row); }
+                    next_page(row) => { root.next_page(row); }
                 }
             }
         }
@@ -403,12 +417,15 @@ export component SearchView inherits Rectangle {
                     items: root.home_row1;
                     row_index: 0;
                     card_size: root.card_size;
+                    page_indicator: root.home_row1_indicator;
                     card_clicked(id, type) => {
                         root.card_selected(id, type);
                     }
                     request_lazy_range(row, start, end) => {
                         root.request_lazy_range(row, start, end);
                     }
+                    prev_page(row) => { root.prev_page(row); }
+                    next_page(row) => { root.next_page(row); }
                 }
 
                 if (root.active_filter == "all" || root.active_filter == "series") && root.home_row2.length > 0 : CatalogRow {
@@ -416,12 +433,15 @@ export component SearchView inherits Rectangle {
                     items: root.home_row2;
                     row_index: 1;
                     card_size: root.card_size;
+                    page_indicator: root.home_row2_indicator;
                     card_clicked(id, type) => {
                         root.card_selected(id, type);
                     }
                     request_lazy_range(row, start, end) => {
                         root.request_lazy_range(row, start, end);
                     }
+                    prev_page(row) => { root.prev_page(row); }
+                    next_page(row) => { root.next_page(row); }
                 }
 
                 if (root.active_filter == "all" || root.active_filter == "movie") && root.home_row3.length > 0 : CatalogRow {
@@ -429,12 +449,15 @@ export component SearchView inherits Rectangle {
                     items: root.home_row3;
                     row_index: 2;
                     card_size: root.card_size;
+                    page_indicator: root.home_row3_indicator;
                     card_clicked(id, type) => {
                         root.card_selected(id, type);
                     }
                     request_lazy_range(row, start, end) => {
                         root.request_lazy_range(row, start, end);
                     }
+                    prev_page(row) => { root.prev_page(row); }
+                    next_page(row) => { root.next_page(row); }
                 }
 
                 if (root.active_filter == "all" || root.active_filter == "movie") && root.home_row4.length > 0 : CatalogRow {
@@ -442,12 +465,15 @@ export component SearchView inherits Rectangle {
                     items: root.home_row4;
                     row_index: 3;
                     card_size: root.card_size;
+                    page_indicator: root.home_row4_indicator;
                     card_clicked(id, type) => {
                         root.card_selected(id, type);
                     }
                     request_lazy_range(row, start, end) => {
                         root.request_lazy_range(row, start, end);
                     }
+                    prev_page(row) => { root.prev_page(row); }
+                    next_page(row) => { root.next_page(row); }
                 }
             }
         }

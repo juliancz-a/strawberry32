@@ -188,7 +188,7 @@ fn handle_client(mut client: TcpStream) -> Result<(), String> {
             "[PROXY] Detectado contenedor MKV ('{}') -> Iniciando Remux en vivo MKV a fMP4 para Media Foundation (start: {} ms)",
             file_name, start_ms
         ));
-        return serve_mkv_as_fmp4(&mut client, method, &upstream_url, start_ms);
+        return serve_mkv_as_fmp4(&mut client, method, &upstream_url, start_ms, torrent_id, file_idx, file_len);
     }
 
     // --- FLUJO NATIVO MP4 (Sin truncamiento de 4MB que rompía Media Foundation) ---
@@ -341,18 +341,25 @@ fn parse_http_range(range_hdr: &str, total_len: u64) -> (u64, u64, bool) {
 // REMUXER MATROSKA (.MKV) -> FRAGMENTED MP4 (fMP4) EN VIVO PARA WINDOWS RT MEDIA FOUNDATION
 // =================================================================================================
 
+#[derive(Clone, Debug, Default)]
 struct MkvTrackInfo {
     video_track_num: u64,
     width: u16,
     height: u16,
+    duration_ms: u64,
     avcc_box_payload: Vec<u8>,
 }
+
+static CACHED_MKV_INFO: Mutex<Option<HashMap<(usize, usize), MkvTrackInfo>>> = Mutex::new(None);
 
 fn serve_mkv_as_fmp4(
     client: &mut TcpStream,
     method: &str,
     upstream_url: &str,
     start_ms: u64,
+    torrent_id: usize,
+    file_idx: usize,
+    file_len: u64,
 ) -> Result<(), String> {
     let hdr = "HTTP/1.1 200 OK\r\n\
                Content-Type: video/mp4\r\n\
@@ -363,39 +370,115 @@ fn serve_mkv_as_fmp4(
     }
     let _ = client.flush();
 
+    // Check if we have cached track info from previous connection
+    let cached_info = {
+        let mut guard = CACHED_MKV_INFO.lock().unwrap();
+        let map = guard.get_or_insert_with(HashMap::new);
+        map.get(&(torrent_id, file_idx)).cloned()
+    };
+
+    let mut mkv_info = cached_info.unwrap_or(MkvTrackInfo {
+        video_track_num: 1,
+        width: 1280,
+        height: 720,
+        duration_ms: 0,
+        avcc_box_payload: Vec::new(),
+    });
+
+    let mut init_sent = false;
+    let mut seq_number: u32 = 1;
+    let mut current_cluster_tc: u64 = 0;
+    let mut base_dts_ms: Option<u64> = None;
+
+    // Fast-seek jumping: if seeking and duration/file length are known, request byte offset
+    let mut seek_byte: u64 = 0;
+    if start_ms > 0 && mkv_info.duration_ms > 0 && file_len > 0 {
+        let approx_byte = ((file_len as f64) * (start_ms as f64 / mkv_info.duration_ms as f64)) as u64;
+        seek_byte = approx_byte.saturating_sub(1_048_576); // Back up 1MB to hit previous keyframe/cluster
+        log_torrent(&format!(
+            "[REMUX FAST-SEEK] Jumping to approx byte {} for target {} ms (Duration: {} ms)",
+            seek_byte, start_ms, mkv_info.duration_ms
+        ));
+    }
+
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(10))
         .timeout_read(Duration::from_secs(60))
         .build();
 
-    let resp = agent
-        .get(upstream_url)
+    let mut req = agent.get(upstream_url);
+    if seek_byte > 0 {
+        req = req.set("Range", &format!("bytes={}-", seek_byte));
+    }
+
+    let resp = req
         .call()
         .map_err(|e| format!("Error abriendo MKV en librqbit: {}", e))?;
 
-    let mut reader = resp.into_reader();
-    let mut mkv_info = MkvTrackInfo {
-        video_track_num: 1,
-        width: 1280,
-        height: 720,
-        avcc_box_payload: Vec::new(),
-    };
+    // 256 KB buffered reader to eliminate thousands of small socket reads
+    let mut reader = std::io::BufReader::with_capacity(256 * 1024, resp.into_reader());
 
-    let mut init_sent = false;
-    let mut seq_number: u32 = 1;
-    let mut current_cluster_tc: u64 = 0;
+    // If fast-seeking, immediately send init segment using cached config
+    if seek_byte > 0 && !mkv_info.avcc_box_payload.is_empty() {
+        let init_seg = build_fmp4_init_segment(&mkv_info);
+        if client.write_all(&init_seg).is_ok() {
+            let _ = client.flush();
+            init_sent = true;
+            log_torrent("[REMUX FAST-SEEK] Cached init segment sent immediately.");
+        }
 
-    // Parseamos el flujo EBML de Matroska en vivo
+        // Align stream to the next Matroska cluster sync marker: 0x1F, 0x43, 0xB6, 0x75
+        let mut ring = [0u8; 4];
+        if reader.read_exact(&mut ring).is_ok() {
+            while ring != [0x1F, 0x43, 0xB6, 0x75] {
+                let mut b = [0u8; 1];
+                if reader.read_exact(&mut b).is_err() { break; }
+                ring[0] = ring[1];
+                ring[1] = ring[2];
+                ring[2] = ring[3];
+                ring[3] = b[0];
+            }
+            if ring == [0x1F, 0x43, 0xB6, 0x75] {
+                log_torrent("[REMUX FAST-SEEK] Cluster boundary synchronized!");
+                let _cluster_size = read_vint_size(&mut reader);
+            }
+        }
+    }
+
+    // Parse Matroska EBML stream
     while let Some((elem_id, elem_size)) = read_ebml_element_header(&mut reader) {
         match elem_id {
             // Contenedores Master de Matroska: entramos adentro sin saltar su contenido
             0x18538067 // Segment
+            | 0x1549A966 // Info
             | 0x1654AE6B // Tracks
             | 0xAE       // TrackEntry
             | 0xE0       // Video
             | 0x1F43B675 // Cluster
             => continue,
 
+            // TimecodeScale (0x2AD7B1)
+            0x2AD7B1 => {
+                let _ = read_uint(&mut reader, elem_size as usize);
+            }
+            // Duration (0x4489)
+            0x4489 => {
+                if elem_size == 4 {
+                    let mut b = [0u8; 4];
+                    if reader.read_exact(&mut b).is_ok() {
+                        let dur = f32::from_be_bytes(b);
+                        mkv_info.duration_ms = dur as u64;
+                    }
+                } else if elem_size == 8 {
+                    let mut b = [0u8; 8];
+                    if reader.read_exact(&mut b).is_ok() {
+                        let dur = f64::from_be_bytes(b);
+                        mkv_info.duration_ms = dur as u64;
+                    }
+                } else {
+                    skip_bytes(&mut reader, elem_size);
+                }
+            }
             // TrackNumber (0xD7)
             0xD7 => {
                 let _ = read_uint(&mut reader, elem_size as usize);
@@ -429,6 +512,11 @@ fn serve_mkv_as_fmp4(
                             mkv_info.width,
                             mkv_info.height
                         ));
+
+                        // Cache track info for instant seeking on future connections
+                        let mut guard = CACHED_MKV_INFO.lock().unwrap();
+                        let map = guard.get_or_insert_with(HashMap::new);
+                        map.insert((torrent_id, file_idx), mkv_info.clone());
                     }
                 }
             }
@@ -481,15 +569,21 @@ fn serve_mkv_as_fmp4(
                         let nal_payload = &block[vlen + 3..];
                         let dts_ms = (current_cluster_tc as i64 + rel_tc as i64).max(0) as u64;
 
-                        // Phase 6: Session restart seek support - skip until keyframe at or after start_ms
+                        // Skip until target start_ms
                         if start_ms > 0 && dts_ms < start_ms {
                             continue;
                         }
 
+                        if base_dts_ms.is_none() {
+                            base_dts_ms = Some(dts_ms);
+                        }
+
+                        let rebased_dts = dts_ms.saturating_sub(base_dts_ms.unwrap_or(0));
+
                         let frag = build_fmp4_video_fragment(
                             seq_number,
-                            dts_ms.saturating_sub(start_ms) * 90, // Escala de tiempo 90kHz
-                            3000,        // ~33.3ms por cuadro (29.97/30 fps)
+                            rebased_dts * 90, // Escala de tiempo 90kHz
+                            3000,             // ~33.3ms por cuadro (29.97/30 fps)
                             is_keyframe,
                             nal_payload,
                         );
@@ -613,6 +707,10 @@ fn build_fmp4_init_segment(info: &MkvTrackInfo) -> Vec<u8> {
     // 2. mvhd box (timescale = 90000)
     let mut mvhd_p = vec![0u8; 100];
     mvhd_p[12..16].copy_from_slice(&90000u32.to_be_bytes());
+    if info.duration_ms > 0 {
+        let dur_units = (info.duration_ms * 90) as u32;
+        mvhd_p[16..20].copy_from_slice(&dur_units.to_be_bytes());
+    }
     mvhd_p[20..24].copy_from_slice(&0x00010000u32.to_be_bytes()); // rate 1.0
     mvhd_p[24..26].copy_from_slice(&0x0100u16.to_be_bytes()); // volume 1.0
     mvhd_p[36..40].copy_from_slice(&0x00010000u32.to_be_bytes());
@@ -625,6 +723,10 @@ fn build_fmp4_init_segment(info: &MkvTrackInfo) -> Vec<u8> {
     let mut tkhd_p = vec![0u8; 84];
     tkhd_p[3] = 0x03; // Track enabled + in movie
     tkhd_p[12..16].copy_from_slice(&1u32.to_be_bytes()); // track_ID = 1
+    if info.duration_ms > 0 {
+        let dur_units = (info.duration_ms * 90) as u32;
+        tkhd_p[20..24].copy_from_slice(&dur_units.to_be_bytes());
+    }
     tkhd_p[40..44].copy_from_slice(&0x00010000u32.to_be_bytes());
     tkhd_p[56..60].copy_from_slice(&0x00010000u32.to_be_bytes());
     tkhd_p[72..76].copy_from_slice(&0x40000000u32.to_be_bytes());

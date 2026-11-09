@@ -24,6 +24,7 @@ pub struct StreamStatus {
     pub progress_mb: f64,
     pub elapsed_secs: u64,
     pub error: Option<String>,
+    pub progress_ratio: f32,
 }
 
 static STREAM_STATUS: Mutex<StreamStatus> = Mutex::new(StreamStatus {
@@ -35,6 +36,7 @@ static STREAM_STATUS: Mutex<StreamStatus> = Mutex::new(StreamStatus {
     progress_mb: 0.0,
     elapsed_secs: 0,
     error: None,
+    progress_ratio: 0.0,
 });
 
 static CURRENT_VIDEO_HASH: Mutex<Option<(String, u64)>> = Mutex::new(None);
@@ -484,7 +486,7 @@ async fn handle_start_stream(
     crate::cache_cleaner::set_active_torrent_dir(Some(active_torrent_folder));
 
     // PART 2: SMART CONTAINER METADATA INSPECTION & TARGETED PRE-BUFFERING
-    let head_chunk_size = 65536usize.min(file_len as usize);
+    let head_chunk_size = 131_072usize.min(file_len as usize); // 128 KB
     let url_head = stream_url.clone();
     let head_range_hdr = format!("bytes=0-{}", head_chunk_size.saturating_sub(1));
     let head_handle = tokio::task::spawn_blocking(move || -> Vec<u8> {
@@ -502,36 +504,37 @@ async fn handle_start_stream(
         }
     });
 
+    let ttfb_timer = std::time::Instant::now();
+    let head_bytes = head_handle.await.unwrap_or_default();
+
+    // Compute OpenSubtitles hash asynchronously in background - NEVER block playback start!
     let tail_chunk_size = 65536u64.min(file_len);
     let tail_start = file_len.saturating_sub(tail_chunk_size);
     let url_tail = stream_url.clone();
     let tail_range_hdr = format!("bytes={}-{}", tail_start, file_len.saturating_sub(1));
-    let tail_handle = tokio::task::spawn_blocking(move || -> Vec<u8> {
-        let client = ureq::AgentBuilder::new()
-            .timeout_connect(Duration::from_secs(10))
-            .timeout_read(Duration::from_secs(60))
-            .build();
-        if let Ok(resp) = client.get(&url_tail).set("Range", &tail_range_hdr).call() {
-            let mut reader = resp.into_reader();
-            let mut buf = Vec::with_capacity(tail_chunk_size as usize);
-            let _ = std::io::copy(&mut reader, &mut buf);
-            buf
-        } else {
-            Vec::new()
+    let head_bytes_for_hash = head_bytes.clone();
+    tokio::spawn(async move {
+        let tail_bytes = tokio::task::spawn_blocking(move || -> Vec<u8> {
+            let client = ureq::AgentBuilder::new()
+                .timeout_connect(Duration::from_secs(10))
+                .timeout_read(Duration::from_secs(60))
+                .build();
+            if let Ok(resp) = client.get(&url_tail).set("Range", &tail_range_hdr).call() {
+                let mut reader = resp.into_reader();
+                let mut buf = Vec::with_capacity(tail_chunk_size as usize);
+                let _ = std::io::copy(&mut reader, &mut buf);
+                buf
+            } else {
+                Vec::new()
+            }
+        }).await.unwrap_or_default();
+
+        if !head_bytes_for_hash.is_empty() && !tail_bytes.is_empty() {
+            let opensub_hash = crate::subtitles::calculate_opensub_hash(file_len, &head_bytes_for_hash, &tail_bytes);
+            log_info(&format!("Computed OpenSubtitles videoHash in background: {} for size: {}", opensub_hash, file_len));
+            *CURRENT_VIDEO_HASH.lock().unwrap() = Some((opensub_hash, file_len));
         }
     });
-
-    let ttfb_timer = std::time::Instant::now();
-    let (head_res, tail_res) = tokio::join!(head_handle, tail_handle);
-    let head_bytes = head_res.unwrap_or_default();
-    let tail_bytes = tail_res.unwrap_or_default();
-
-    // Frame-accurate OpenSubtitles hash
-    if !head_bytes.is_empty() && !tail_bytes.is_empty() {
-        let opensub_hash = crate::subtitles::calculate_opensub_hash(file_len, &head_bytes, &tail_bytes);
-        log_info(&format!("Computed OpenSubtitles videoHash: {} for size: {}", opensub_hash, file_len));
-        *CURRENT_VIDEO_HASH.lock().unwrap() = Some((opensub_hash, file_len));
-    }
 
     // Inspect container metadata
     let mut cursor = std::io::Cursor::new(head_bytes.clone());
@@ -561,18 +564,20 @@ async fn handle_start_stream(
             }).await;
         }
     } else if let Some(cues_offset) = meta.cues_offset {
-        log_torrent(&format!("Pre-fetching MKV Cues index at {} (500 KB)...", cues_offset));
+        log_torrent(&format!("Pre-fetching MKV Cues index at {} in background...", cues_offset));
         let url_cues = stream_url.clone();
         let cues_range_hdr = format!("bytes={}-{}", cues_offset, (cues_offset + 500_000).min(file_len).saturating_sub(1));
-        let _ = tokio::task::spawn_blocking(move || {
-            let client = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(10)).build();
-            if let Ok(resp) = client.get(&url_cues).set("Range", &cues_range_hdr).call() {
-                let mut reader = resp.into_reader();
-                let _ = std::io::copy(&mut reader, &mut std::io::sink());
-            }
-        }).await;
+        tokio::spawn(async move {
+            let _ = tokio::task::spawn_blocking(move || {
+                let client = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(10)).build();
+                if let Ok(resp) = client.get(&url_cues).set("Range", &cues_range_hdr).call() {
+                    let mut reader = resp.into_reader();
+                    let _ = std::io::copy(&mut reader, &mut std::io::sink());
+                }
+            }).await;
+        });
     } else {
-        // Fallback for MP4 files where moov was not in the first 64KB: prefetch last 3 MB
+        // Fallback for MP4 files where moov was not in the first 128KB: prefetch last 3 MB
         let is_mp4 = file_name.to_lowercase().ends_with(".mp4") || file_name.to_lowercase().ends_with(".m4v");
         if is_mp4 && file_len > 3_000_000 {
             let tail_moov_start = file_len - 3_000_000;
@@ -589,15 +594,47 @@ async fn handle_start_stream(
         }
     }
 
-    // Buffer initial playback segment (6 MB) for smooth player start
-    let init_play_size = (6 * 1024 * 1024).min(file_len as usize);
+    // Buffer initial playback segment (1.5 MB for 720p/MKV, 2.5 MB for 1080p)
+    let is_1080p = file_name.to_lowercase().contains("1080p") || file_name.to_lowercase().contains("fhd");
+    let init_play_size = if is_1080p {
+        (2_621_440usize).min(file_len as usize) // 2.5 MB for 1080p
+    } else {
+        (1_572_864usize).min(file_len as usize) // 1.5 MB for 720p / MKV
+    };
     let url_play = stream_url.clone();
     let play_range_hdr = format!("bytes=0-{}", init_play_size.saturating_sub(1));
+    let t_buf_start = std::time::Instant::now();
     let _ = tokio::task::spawn_blocking(move || {
         let client = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(10)).build();
         if let Ok(resp) = client.get(&url_play).set("Range", &play_range_hdr).call() {
             let mut reader = resp.into_reader();
-            let _ = std::io::copy(&mut reader, &mut std::io::sink());
+            let mut chunk = [0u8; 65536];
+            let mut total_read = 0usize;
+            while total_read < init_play_size {
+                match reader.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        total_read += n;
+                        let ratio = (total_read as f32 / init_play_size as f32).clamp(0.0, 1.0);
+                        let elapsed = t_buf_start.elapsed().as_secs_f64();
+                        let speed = if elapsed > 0.05 {
+                            (total_read as f64 / 1024.0) / elapsed
+                        } else {
+                            0.0
+                        };
+                        let mut status = STREAM_STATUS.lock().unwrap();
+                        status.progress_mb = total_read as f64 / (1024.0 * 1024.0);
+                        status.speed_kbs = speed;
+                        status.progress_ratio = ratio;
+                        status.message = format!(
+                            "Pre-buffering stream... ({:.1}/{:.1} MB)",
+                            total_read as f64 / 1_048_576.0,
+                            init_play_size as f64 / 1_048_576.0
+                        );
+                    }
+                    Err(_) => break,
+                }
+            }
         }
     }).await;
 

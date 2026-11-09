@@ -43,16 +43,19 @@ export component CatalogRow inherits VerticalLayout {
     in property <[CatalogItem]> items: [];
     in property <int> row_index: 0;
     in property <string> card_size: "m";
+    in property <string> page_indicator: "";
 
     property <length> card_slot_width: root.card_size == "s" ? 126px : (root.card_size == "l" ? 172px : 148px);
     property <length> row_height: root.card_size == "s" ? 256px : (root.card_size == "l" ? 330px : 292px);
 
     callback card_clicked(string, string);
     callback request_lazy_range(int, int, int);
+    callback prev_page(int);
+    callback next_page(int);
 
     spacing: 8px;
 
-    // Row Header with title and compact modern chevrons
+    // Row Header with title, page indicator and compact modern chevrons
     HorizontalLayout {
         alignment: space-between;
 
@@ -65,48 +68,49 @@ export component CatalogRow inherits VerticalLayout {
         }
 
         HorizontalLayout {
-            spacing: 6px;
+            spacing: 8px;
             alignment: end;
+
+            if root.page_indicator != "" : Text {
+                text: root.page_indicator;
+                font-size: 12px;
+                color: Theme.text-muted;
+                vertical-alignment: center;
+            }
 
             ChevronButton {
                 text: "◀";
                 clicked => {
-                    flick.content-x = min(0px, flick.content-x + root.card_slot_width * 3);
-                    root.request_lazy_range(root.row_index, 0, root.items.length);
+                    root.prev_page(root.row_index);
                 }
             }
 
             ChevronButton {
                 text: "▶";
                 clicked => {
-                    flick.content-x = max(- (root.items.length * root.card_slot_width - flick.width), flick.content-x - root.card_slot_width * 3);
-                    root.request_lazy_range(root.row_index, 0, root.items.length);
+                    root.next_page(root.row_index);
                 }
             }
         }
     }
 
-    // Scrollable Row of Poster Cards (horizontal scrolling)
-    flick := Flickable {
+    // Fixed horizontal viewport displaying only visible card slice (Zero Flickable software-render overhead)
+    HorizontalLayout {
         height: root.row_height;
-        content-width: root.items.length * root.card_slot_width;
-        content-height: self.height;
+        spacing: 10px;
+        alignment: start;
 
-        HorizontalLayout {
-            spacing: 10px;
+        for item in root.items : PosterCard {
+            id: item.id;
+            title: item.title;
+            year: item.year;
+            item_type: item.item_type;
+            poster: item.poster;
+            has_poster: item.has_poster;
+            card_size: root.card_size;
 
-            for item in root.items : PosterCard {
-                id: item.id;
-                title: item.title;
-                year: item.year;
-                item_type: item.item_type;
-                poster: item.poster;
-                has_poster: item.has_poster;
-                card_size: root.card_size;
-
-                clicked(id, type) => {
-                    root.card_clicked(id, type);
-                }
+            clicked(id, type) => {
+                root.card_clicked(id, type);
             }
         }
     }

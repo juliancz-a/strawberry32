@@ -212,7 +212,8 @@ impl MetadataInspector {
 
         let read_size = 102_400.min(total_size) as usize;
         let mut buffer = vec![0u8; read_size];
-        reader.read_exact(&mut buffer).await?;
+        let n = reader.read(&mut buffer).await?;
+        buffer.truncate(n);
 
         let mut pos = 0;
 

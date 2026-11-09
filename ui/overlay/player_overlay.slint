@@ -995,10 +995,10 @@ export component PlayerOverlay inherits Window {
 
     // PURE OVERLAY SUBTITLES (Consistent fixed height, 100% transparent background, NO jumping)
     if root.subtitles_enabled && root.subtitle_text != "" : Rectangle {
-        x: 24px;
-        y: parent.height - 120px;
-        width: parent.width - 48px;
-        height: 38px;
+        x: (parent.width - self.width) / 2;
+        y: parent.height - 124px;
+        width: min(700px, parent.width - 40px);
+        height: 44px;
         background: #00000000; // 100% transparent
 
         sub_touch := TouchArea {
@@ -1012,8 +1012,7 @@ export component PlayerOverlay inherits Window {
         HorizontalLayout {
             alignment: center;
             Rectangle {
-                background: #000000a6; // Subtle translucent backing pill
-                border-radius: 6px;
+                background: #00000000; // 100% transparent - no background bar obscuring the video
 
                 HorizontalLayout {
                     padding-left: 14px;
