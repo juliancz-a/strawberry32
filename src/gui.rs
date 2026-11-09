@@ -21,6 +21,17 @@ extern "system" {}
 slint::include_modules!();
 
 static CURRENT_STREAMS: Mutex<Vec<CompatibleStream>> = Mutex::new(Vec::new());
+static CURRENT_RAW_STREAMS: Mutex<Vec<CompatibleStream>> = Mutex::new(Vec::new());
+static STREAM_FORMAT_FILTER: Mutex<String> = Mutex::new(String::new());
+static STREAM_RES_FILTER: Mutex<String> = Mutex::new(String::new());
+static STREAM_SORT_BY: Mutex<String> = Mutex::new(String::new());
+static STREAM_SORT_ASC: Mutex<bool> = Mutex::new(false);
+
+static SEARCH_RAW_RESULTS: Mutex<(Vec<addons::MetaItem>, Vec<addons::MetaItem>)> = Mutex::new((Vec::new(), Vec::new()));
+static SEARCH_ACTIVE_GENRE: Mutex<String> = Mutex::new(String::new());
+static SEARCH_ACTIVE_SORT: Mutex<String> = Mutex::new(String::new());
+static SEARCH_SORT_ASC: Mutex<bool> = Mutex::new(false);
+
 static ACTIVE_STREAM_URL: Mutex<String> = Mutex::new(String::new());
 static SUBTITLE_TRACKS: Mutex<Vec<state::SubtitleTrack>> = Mutex::new(Vec::new());
 static CURRENT_SUB_INDEX: Mutex<usize> = Mutex::new(0);
@@ -399,12 +410,12 @@ pub fn load_multi_row_home_catalog(app_weak: slint::Weak<MainWindow>) {
                 ui.set_is_app_initializing(false);
                 ui.set_is_catalog_loading(false);
 
-                let items1: Vec<CatalogItem> = r1.iter().map(meta_to_catalog_item).collect();
-                let items2: Vec<CatalogItem> = r2.iter().map(meta_to_catalog_item).collect();
-                let items3: Vec<CatalogItem> = r3.iter().map(meta_to_catalog_item).collect();
-                let items4: Vec<CatalogItem> = r4.iter().map(meta_to_catalog_item).collect();
-                let items5: Vec<CatalogItem> = r5.iter().map(meta_to_catalog_item).collect();
-                let items6: Vec<CatalogItem> = r6.iter().map(meta_to_catalog_item).collect();
+                let items1: Vec<CatalogItem> = r1.iter().take(24).map(meta_to_catalog_item).collect();
+                let items2: Vec<CatalogItem> = r2.iter().take(24).map(meta_to_catalog_item).collect();
+                let items3: Vec<CatalogItem> = r3.iter().take(24).map(meta_to_catalog_item).collect();
+                let items4: Vec<CatalogItem> = r4.iter().take(24).map(meta_to_catalog_item).collect();
+                let items5: Vec<CatalogItem> = r5.iter().take(24).map(meta_to_catalog_item).collect();
+                let items6: Vec<CatalogItem> = r6.iter().take(24).map(meta_to_catalog_item).collect();
 
                 ui.set_home_row1(ModelRc::from(Rc::new(VecModel::from(items1))));
                 ui.set_home_row2(ModelRc::from(Rc::new(VecModel::from(items2))));
@@ -497,6 +508,141 @@ fn rotate_hero(ui: &MainWindow, delta: i32) {
     }
 }
 
+fn apply_search_filters(ui: &MainWindow) {
+    let (movies, series) = SEARCH_RAW_RESULTS.lock().unwrap().clone();
+    let genre = SEARCH_ACTIVE_GENRE.lock().unwrap().to_lowercase();
+    let sort = SEARCH_ACTIVE_SORT.lock().unwrap().to_lowercase();
+    let is_asc = *SEARCH_SORT_ASC.lock().unwrap();
+
+    let filter_and_sort = |mut items: Vec<addons::MetaItem>| -> Vec<addons::MetaItem> {
+        if genre != "all" && !genre.is_empty() {
+            items.retain(|it| {
+                it.genres.iter().any(|g| g.to_lowercase().contains(&genre))
+                    || it.description.as_deref().unwrap_or("").to_lowercase().contains(&genre)
+                    || it.name.to_lowercase().contains(&genre)
+            });
+        }
+        match sort.as_str() {
+            "rating" => {
+                items.sort_by(|a, b| {
+                    let ra = a.imdb_rating.as_deref().and_then(|r| r.parse::<f32>().ok()).unwrap_or(0.0);
+                    let rb = b.imdb_rating.as_deref().and_then(|r| r.parse::<f32>().ok()).unwrap_or(0.0);
+                    if is_asc {
+                        ra.partial_cmp(&rb).unwrap_or(std::cmp::Ordering::Equal)
+                    } else {
+                        rb.partial_cmp(&ra).unwrap_or(std::cmp::Ordering::Equal)
+                    }
+                });
+            }
+            "year" => {
+                items.sort_by(|a, b| {
+                    let ya = a.year.as_deref().and_then(|y| y.parse::<u32>().ok()).unwrap_or(0);
+                    let yb = b.year.as_deref().and_then(|y| y.parse::<u32>().ok()).unwrap_or(0);
+                    if is_asc {
+                        ya.cmp(&yb)
+                    } else {
+                        yb.cmp(&ya)
+                    }
+                });
+            }
+            "title" => {
+                items.sort_by(|a, b| {
+                    if is_asc {
+                        a.name.to_lowercase().cmp(&b.name.to_lowercase())
+                    } else {
+                        b.name.to_lowercase().cmp(&a.name.to_lowercase())
+                    }
+                });
+            }
+            _ => {
+                if is_asc {
+                    items.reverse();
+                }
+            } // "popular": original order or reversed
+        }
+        items
+    };
+
+    let filtered_movies = filter_and_sort(movies);
+    let filtered_series = filter_and_sort(series);
+
+    let m_models: Vec<CatalogItem> = filtered_movies.iter().take(30).map(meta_to_catalog_item).collect();
+    let s_models: Vec<CatalogItem> = filtered_series.iter().take(30).map(meta_to_catalog_item).collect();
+
+    ui.set_search_movie_results(ModelRc::from(Rc::new(VecModel::from(m_models))));
+    ui.set_search_series_results(ModelRc::from(Rc::new(VecModel::from(s_models))));
+
+    ui.invoke_request_lazy_range(10, 0, 8);
+    ui.invoke_request_lazy_range(11, 0, 8);
+}
+
+fn apply_stream_filters(ui: &MainWindow) {
+    let raw = CURRENT_RAW_STREAMS.lock().unwrap().clone();
+    let fmt = STREAM_FORMAT_FILTER.lock().unwrap().to_lowercase();
+    let res = STREAM_RES_FILTER.lock().unwrap().to_lowercase();
+    let sort = STREAM_SORT_BY.lock().unwrap().to_lowercase();
+    let is_asc = *STREAM_SORT_ASC.lock().unwrap();
+
+    let mut filtered = raw;
+    if fmt == "mp4" {
+        filtered.retain(|s| s.is_mp4);
+    } else if fmt == "mkv" {
+        filtered.retain(|s| !s.is_mp4);
+    }
+
+    if res == "1080p" {
+        filtered.retain(|s| s.quality.contains("1080"));
+    } else if res == "720p" {
+        filtered.retain(|s| s.quality.contains("720"));
+    } else if res == "480p" {
+        filtered.retain(|s| s.quality.contains("480") || s.quality.contains("SD"));
+    }
+
+    match sort.as_str() {
+        "seeds" => {
+            filtered.sort_by(|a, b| {
+                if is_asc {
+                    a.seeders.cmp(&b.seeders)
+                } else {
+                    b.seeders.cmp(&a.seeders)
+                }
+            });
+        }
+        "size" => {
+            filtered.sort_by(|a, b| {
+                let parse_size = |s: &str| -> f64 {
+                    let parts: Vec<&str> = s.split_whitespace().collect();
+                    if let Some(num) = parts.first().and_then(|n| n.parse::<f64>().ok()) {
+                        if parts.get(1).map(|u| u.to_uppercase()).as_deref() == Some("GB") {
+                            num * 1024.0
+                        } else {
+                            num
+                        }
+                    } else {
+                        0.0
+                    }
+                };
+                let sa = parse_size(&a.size);
+                let sb = parse_size(&b.size);
+                if is_asc {
+                    sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
+                } else {
+                    sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+                }
+            });
+        }
+        _ => {
+            if is_asc {
+                filtered.reverse();
+            }
+        } // "compat": already sorted by compatibility score
+    }
+
+    *CURRENT_STREAMS.lock().unwrap() = filtered.clone();
+    let models = convert_streams_to_models(&filtered);
+    ui.set_stream_items(ModelRc::from(Rc::new(VecModel::from(models))));
+}
+
 pub fn run_app() -> Result<(), String> {
     log_info("Starting Slint GUI window...");
     let app = MainWindow::new().map_err(|e| format!("Failed to create Slint MainWindow: {}", e))?;
@@ -535,21 +681,13 @@ pub fn run_app() -> Result<(), String> {
 
             let m_count = movies.len();
             let s_count = series.len();
+            *SEARCH_RAW_RESULTS.lock().unwrap() = (movies, series);
 
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = app_weak2.upgrade() {
                     ui.set_is_searching(false);
-                    let movie_items: Vec<CatalogItem> = movies.iter().map(meta_to_catalog_item).collect();
-                    let series_items: Vec<CatalogItem> = series.iter().map(meta_to_catalog_item).collect();
-                    ui.set_search_movie_results(ModelRc::from(Rc::new(VecModel::from(movie_items))));
-                    ui.set_search_series_results(ModelRc::from(Rc::new(VecModel::from(series_items))));
+                    apply_search_filters(&ui);
                     ui.set_status_text(format!("Found {} movies and {} series for '{}'", m_count, s_count, query_str).into());
-
-                    // Request posters for all search results (visible 0..8 first, then rest)
-                    ui.invoke_request_lazy_range(10, 0, 8);
-                    ui.invoke_request_lazy_range(11, 0, 8);
-                    ui.invoke_request_lazy_range(10, 8, 100);
-                    ui.invoke_request_lazy_range(11, 8, 100);
                 }
             });
         });
@@ -561,6 +699,62 @@ pub fn run_app() -> Result<(), String> {
         let f_str = filter.to_string();
         if let Some(ui) = app_weak.upgrade() {
             ui.set_active_filter(f_str.into());
+        }
+    });
+
+    let app_weak_genre = app.as_weak();
+    app.on_search_genre_clicked(move |genre| {
+        *SEARCH_ACTIVE_GENRE.lock().unwrap() = genre.to_string();
+        if let Some(ui) = app_weak_genre.upgrade() {
+            apply_search_filters(&ui);
+        }
+    });
+
+    let app_weak_sort = app.as_weak();
+    app.on_search_sort_clicked(move |sort| {
+        *SEARCH_ACTIVE_SORT.lock().unwrap() = sort.to_string();
+        if let Some(ui) = app_weak_sort.upgrade() {
+            apply_search_filters(&ui);
+        }
+    });
+
+    let app_weak_s_order = app.as_weak();
+    app.on_search_sort_order_toggled(move |asc| {
+        *SEARCH_SORT_ASC.lock().unwrap() = asc;
+        if let Some(ui) = app_weak_s_order.upgrade() {
+            apply_search_filters(&ui);
+        }
+    });
+
+    let app_weak_sff = app.as_weak();
+    app.on_detail_stream_filter_format(move |fmt| {
+        *STREAM_FORMAT_FILTER.lock().unwrap() = fmt.to_string();
+        if let Some(ui) = app_weak_sff.upgrade() {
+            apply_stream_filters(&ui);
+        }
+    });
+
+    let app_weak_sfr = app.as_weak();
+    app.on_detail_stream_filter_res(move |res| {
+        *STREAM_RES_FILTER.lock().unwrap() = res.to_string();
+        if let Some(ui) = app_weak_sfr.upgrade() {
+            apply_stream_filters(&ui);
+        }
+    });
+
+    let app_weak_ssb = app.as_weak();
+    app.on_detail_stream_sort_by(move |sort| {
+        *STREAM_SORT_BY.lock().unwrap() = sort.to_string();
+        if let Some(ui) = app_weak_ssb.upgrade() {
+            apply_stream_filters(&ui);
+        }
+    });
+
+    let app_weak_str_order = app.as_weak();
+    app.on_detail_stream_sort_order(move |asc| {
+        *STREAM_SORT_ASC.lock().unwrap() = asc;
+        if let Some(ui) = app_weak_str_order.upgrade() {
+            apply_stream_filters(&ui);
         }
     });
 
@@ -950,13 +1144,13 @@ pub fn run_app() -> Result<(), String> {
                 }
             };
 
+            *CURRENT_RAW_STREAMS.lock().unwrap() = streams.clone();
             *CURRENT_STREAMS.lock().unwrap() = streams.clone();
-            let stream_models = convert_streams_to_models(&streams);
 
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = app_weak_meta.upgrade() {
                     ui.set_is_streams_loading(false);
-                    ui.set_stream_items(ModelRc::from(Rc::new(VecModel::from(stream_models))));
+                    apply_stream_filters(&ui);
 
                     if let Some(d) = detail {
                         ui.set_detail_title(d.name.into());
@@ -1080,13 +1274,13 @@ pub fn run_app() -> Result<(), String> {
         let app_weak2 = app_weak.clone();
         std::thread::spawn(move || {
             let streams = addons::fetch_streams("series", &id_s, season as u32, episode as u32).unwrap_or_default();
+            *CURRENT_RAW_STREAMS.lock().unwrap() = streams.clone();
             *CURRENT_STREAMS.lock().unwrap() = streams.clone();
-            let stream_models = convert_streams_to_models(&streams);
 
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = app_weak2.upgrade() {
                     ui.set_is_streams_loading(false);
-                    ui.set_stream_items(ModelRc::from(Rc::new(VecModel::from(stream_models))));
+                    apply_stream_filters(&ui);
                     if ui.get_current_view() == 2 && !streams.is_empty() {
                         log_player("Autoplaying top compatible stream for episode...");
                         ui.invoke_play_stream_clicked(0);

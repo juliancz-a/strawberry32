@@ -351,10 +351,16 @@ pub fn fetch_streams(
             || upper.contains("H.265")
             || upper.contains("10BIT")
             || upper.contains("10-BIT")
+            || upper.contains("10 BIT")
+            || upper.contains("HI10P")
             || upper.contains("HDR")
+            || upper.contains("HDR10")
+            || upper.contains("HLG")
             || upper.contains("DV")
             || upper.contains("DOVI")
-            || upper.contains("AV1");
+            || upper.contains("AV1")
+            || upper.contains("AV01")
+            || upper.contains("VP9");
 
         if is_rejected {
             continue;
@@ -374,6 +380,11 @@ pub fn fetch_streams(
             continue;
         }
         if max_height <= 480 && (is_720p || is_1080p) {
+            continue;
+        }
+
+        // For 1080p, strictly ensure H.264 compatibility (Tegra 3 only decodes 8-bit H.264 up to 1080p)
+        if is_1080p && !upper.contains("X264") && !upper.contains("H264") && !upper.contains("H.264") && !upper.contains("AVC") && !upper.contains(".MP4") {
             continue;
         }
 

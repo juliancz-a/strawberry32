@@ -221,6 +221,10 @@ export component DetailView inherits Rectangle {
 
     in property <[StreamItem]> stream_items: [];
     in property <bool> is_streams_loading: false;
+    in-out property <string> stream_filter_format: "all";
+    in-out property <string> stream_filter_res: "all";
+    in-out property <string> stream_sort_by: "compat";
+    in-out property <bool> stream_sort_asc: false;
 
     callback back_clicked();
     callback play_stream_clicked(int);
@@ -228,6 +232,10 @@ export component DetailView inherits Rectangle {
     callback fetch_episode_streams(string, int, int);
     callback play_best_match();
     callback season_selected(int);
+    callback stream_filter_format_changed(string);
+    callback stream_filter_res_changed(string);
+    callback stream_sort_by_changed(string);
+    callback stream_sort_order_toggled(bool);
 
     background: Theme.bg;
 
@@ -694,6 +702,191 @@ export component DetailView inherits Rectangle {
                         font-weight: 700;
                         color: Theme.accent;
                         vertical-alignment: center;
+                    }
+                }
+
+                // Stream Filters & Sorting Controls
+                HorizontalLayout {
+                    alignment: space-between;
+                    spacing: 12px;
+
+                    // Filter by Format & Resolution
+                    HorizontalLayout {
+                        spacing: 6px;
+                        alignment: start;
+
+                        Text {
+                            text: "Format:";
+                            font-size: 11px;
+                            font-weight: 700;
+                            color: Theme.text-muted;
+                            vertical-alignment: center;
+                        }
+
+                        for fmt in [
+                            { id: "all", label: "All" },
+                            { id: "mp4", label: "MP4" },
+                            { id: "mkv", label: "MKV" }
+                        ] : Rectangle {
+                            height: 24px;
+                            background: root.stream_filter_format == fmt.id ? Theme.accent : Theme.surface;
+                            border-radius: 4px;
+                            border-width: 1px;
+                            border-color: root.stream_filter_format == fmt.id ? Theme.accent : Theme.surface-raised;
+
+                            TouchArea {
+                                width: 100%;
+                                height: 100%;
+                                clicked => {
+                                    root.stream_filter_format = fmt.id;
+                                    root.stream_filter_format_changed(fmt.id);
+                                }
+                            }
+
+                            HorizontalLayout {
+                                padding-left: 6px;
+                                padding-right: 6px;
+                                alignment: center;
+
+                                Text {
+                                    text: fmt.label;
+                                    font-size: 10px;
+                                    font-weight: root.stream_filter_format == fmt.id ? 700 : 500;
+                                    color: root.stream_filter_format == fmt.id ? #ffffff : Theme.text;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        Rectangle { width: 8px; }
+
+                        Text {
+                            text: "Res:";
+                            font-size: 11px;
+                            font-weight: 700;
+                            color: Theme.text-muted;
+                            vertical-alignment: center;
+                        }
+
+                        for r in [
+                            { id: "all", label: "All" },
+                            { id: "1080p", label: "1080p" },
+                            { id: "720p", label: "720p" },
+                            { id: "480p", label: "480p" }
+                        ] : Rectangle {
+                            height: 24px;
+                            background: root.stream_filter_res == r.id ? Theme.accent : Theme.surface;
+                            border-radius: 4px;
+                            border-width: 1px;
+                            border-color: root.stream_filter_res == r.id ? Theme.accent : Theme.surface-raised;
+
+                            TouchArea {
+                                width: 100%;
+                                height: 100%;
+                                clicked => {
+                                    root.stream_filter_res = r.id;
+                                    root.stream_filter_res_changed(r.id);
+                                }
+                            }
+
+                            HorizontalLayout {
+                                padding-left: 6px;
+                                padding-right: 6px;
+                                alignment: center;
+
+                                Text {
+                                    text: r.label;
+                                    font-size: 10px;
+                                    font-weight: root.stream_filter_res == r.id ? 700 : 500;
+                                    color: root.stream_filter_res == r.id ? #ffffff : Theme.text;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+
+                    // Sort By
+                    HorizontalLayout {
+                        spacing: 6px;
+                        alignment: end;
+
+                        Text {
+                            text: "Sort:";
+                            font-size: 11px;
+                            font-weight: 700;
+                            color: Theme.text-muted;
+                            vertical-alignment: center;
+                        }
+
+                        for s in [
+                            { id: "compat", label: "Compatibility" },
+                            { id: "seeds", label: "Seeds 👤" },
+                            { id: "size", label: "Size 💾" }
+                        ] : Rectangle {
+                            height: 24px;
+                            background: root.stream_sort_by == s.id ? Theme.accent : Theme.surface;
+                            border-radius: 4px;
+                            border-width: 1px;
+                            border-color: root.stream_sort_by == s.id ? Theme.accent : Theme.surface-raised;
+
+                            TouchArea {
+                                width: 100%;
+                                height: 100%;
+                                clicked => {
+                                    root.stream_sort_by = s.id;
+                                    root.stream_sort_by_changed(s.id);
+                                }
+                            }
+
+                            HorizontalLayout {
+                                padding-left: 6px;
+                                padding-right: 6px;
+                                alignment: center;
+
+                                Text {
+                                    text: s.label;
+                                    font-size: 10px;
+                                    font-weight: root.stream_sort_by == s.id ? 700 : 500;
+                                    color: root.stream_sort_by == s.id ? #ffffff : Theme.text;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        // Order Toggle (Asc / Desc)
+                        Rectangle {
+                            height: 24px;
+                            background: root.stream_sort_asc ? Theme.accent : Theme.surface;
+                            border-radius: 4px;
+                            border-width: 1px;
+                            border-color: root.stream_sort_asc ? Theme.accent : Theme.surface-raised;
+
+                            TouchArea {
+                                width: 100%;
+                                height: 100%;
+                                clicked => {
+                                    root.stream_sort_asc = !root.stream_sort_asc;
+                                    root.stream_sort_order_toggled(root.stream_sort_asc);
+                                }
+                            }
+
+                            HorizontalLayout {
+                                padding-left: 6px;
+                                padding-right: 6px;
+                                alignment: center;
+
+                                Text {
+                                    text: root.stream_sort_asc ? "▲ Asc" : "▼ Desc";
+                                    font-size: 10px;
+                                    font-weight: 700;
+                                    color: root.stream_sort_asc ? #ffffff : Theme.text;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
                     }
                 }
 

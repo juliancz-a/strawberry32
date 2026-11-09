@@ -49,6 +49,7 @@ fn main() {
     // 2. Resolve storage root and canonical layout
     let storage_root = state::get_app_storage_root();
     log_info(&format!("Strawberry32 storage root: {}", storage_root.display()));
+    migrate_legacy_data_if_needed(&storage_root);
 
     // 3. Start background librqbit engine & HTTP range server on 127.0.0.1:3030
     log_info("Starting librqbit 8.0 streaming engine on background thread...");
@@ -71,4 +72,43 @@ fn main() {
     log_info("Closing Strawberry32...");
     // Terminate tokio background threads and all sockets cleanly
     std::process::exit(0);
+}
+
+/// Automatically migrates settings and data from old folders ('streaming-app-arm32', 'rt_stream_data')
+/// into '%LOCALAPPDATA%\Strawberry32' and removes old directories.
+fn migrate_legacy_data_if_needed(target_root: &std::path::Path) {
+    if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
+        let legacy_dir = std::path::PathBuf::from(local_appdata).join("streaming-app-arm32");
+        if legacy_dir.is_dir() {
+            log_info(&format!("Migrating legacy data from {}...", legacy_dir.display()));
+            let target_data = target_root.join("data");
+            let _ = std::fs::create_dir_all(&target_data);
+            for name in &["settings.json", "watch_history.json", "addons.json"] {
+                let old_file = legacy_dir.join(name);
+                let new_file = target_data.join(name);
+                if old_file.is_file() && !new_file.exists() {
+                    let _ = std::fs::copy(&old_file, &new_file);
+                }
+            }
+            let _ = std::fs::remove_dir_all(&legacy_dir);
+        }
+    }
+
+    let temp_data = logger::get_temp_dir().join("rt_stream_data");
+    if temp_data.is_dir() {
+        let target_data = target_root.join("data");
+        for name in &["settings.json", "watch_history.json", "addons.json", "vlc_path.txt"] {
+            let old_file = temp_data.join(name);
+            let new_file = target_data.join(name);
+            if old_file.is_file() && !new_file.exists() {
+                let _ = std::fs::copy(&old_file, &new_file);
+            }
+        }
+        let _ = std::fs::remove_dir_all(&temp_data);
+    }
+
+    let temp_cache = logger::get_temp_dir().join("rt_stream_cache");
+    if temp_cache.is_dir() {
+        let _ = std::fs::remove_dir_all(&temp_cache);
+    }
 }

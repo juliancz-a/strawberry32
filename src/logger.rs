@@ -38,8 +38,13 @@ pub fn get_temp_dir() -> PathBuf {
 
 /// Initializes the global logger and returns the active log file path.
 pub fn init() -> PathBuf {
-    let temp_dir = get_temp_dir();
-    let log_file = temp_dir.join("rt_stream_debug.log");
+    let log_dir = if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
+        PathBuf::from(local_appdata).join("Strawberry32").join("logs")
+    } else {
+        get_temp_dir().join("Strawberry32").join("logs")
+    };
+    let _ = std::fs::create_dir_all(&log_dir);
+    let log_file = log_dir.join("strawberry32_debug.log");
 
     // Initialize or truncate log file on app startup
     let _ = OpenOptions::new()

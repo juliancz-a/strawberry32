@@ -1,7 +1,13 @@
 [package]
 name = "streaming-app-arm32"
+default-run = "Strawberry32"
 version = "0.1.0"
 edition = "2021"
+license = "GPL-3.0-or-later"
+
+[[bin]]
+name = "Strawberry32"
+path = "src/main.rs"
 
 [dependencies]
 windows-sys = { version = "0.61.2", features = [

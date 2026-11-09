@@ -432,7 +432,7 @@ export component PlayerOverlay inherits Window {
         x: parent.width - 340px;
         y: 50px;
         width: 340px;
-        height: parent.height - 50px - (root.subtitle_text != "" ? 106px : 74px);
+        height: parent.height - 50px - 74px;
         background: #151618;
         border-width: 1px;
         border-color: #2a2b2e;
@@ -993,13 +993,13 @@ export component PlayerOverlay inherits Window {
         }
     }
 
-    // Subtitle-only banner when controls are hidden (solid full-width #101011, height 52px)
-    if !controls_visible && root.subtitles_enabled && root.subtitle_text != "" : Rectangle {
-        x: 0px;
-        y: parent.height - 52px;
-        width: 100%;
-        height: 52px;
-        background: #101011;
+    // PURE OVERLAY SUBTITLES (Consistent fixed height, 100% transparent background, NO jumping)
+    if root.subtitles_enabled && root.subtitle_text != "" : Rectangle {
+        x: 24px;
+        y: parent.height - 120px;
+        width: parent.width - 48px;
+        height: 38px;
+        background: #00000000; // 100% transparent
 
         sub_touch := TouchArea {
             width: 100%;
@@ -1011,27 +1011,35 @@ export component PlayerOverlay inherits Window {
 
         HorizontalLayout {
             alignment: center;
-            padding-left: 24px;
-            padding-right: 24px;
+            Rectangle {
+                background: #000000a6; // Subtle translucent backing pill
+                border-radius: 6px;
 
-            Text {
-                text: root.subtitle_text;
-                color: #FFFF55;
-                font-size: root.sub_size == 0 ? 15px : (root.sub_size == 1 ? 18px : 22px);
-                font-weight: 700;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                overflow: elide;
+                HorizontalLayout {
+                    padding-left: 14px;
+                    padding-right: 14px;
+                    padding-top: 4px;
+                    padding-bottom: 4px;
+
+                    Text {
+                        text: root.subtitle_text;
+                        color: #FFFF55;
+                        font-size: root.sub_size == 0 ? 15px : (root.sub_size == 1 ? 18px : 22px);
+                        font-weight: 700;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
             }
         }
     }
 
-    // Bottom transport bar (solid opaque #101011, height 106px with subtitles, 74px without)
+    // Bottom transport bar (solid opaque #101011, fixed height 74px)
     if controls_visible : Rectangle {
         x: 0px;
-        y: parent.height - ((root.subtitles_enabled && root.subtitle_text != "") ? 106px : 74px);
+        y: parent.height - 74px;
         width: 100%;
-        height: (root.subtitles_enabled && root.subtitle_text != "") ? 106px : 74px;
+        height: 74px;
         background: #101011;
 
         bottom_touch := TouchArea {
@@ -1048,20 +1056,6 @@ export component PlayerOverlay inherits Window {
             padding-top: 6px;
             padding-bottom: 6px;
             spacing: 6px;
-
-            if root.subtitles_enabled && root.subtitle_text != "" : HorizontalLayout {
-                alignment: center;
-                height: 24px;
-                Text {
-                    text: root.subtitle_text;
-                    color: #FFFF55;
-                    font-size: root.sub_size == 0 ? 14px : (root.sub_size == 1 ? 16px : 19px);
-                    font-weight: 700;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                    overflow: elide;
-                }
-            }
 
             // Interactive seek bar with hover & playhead indicator
             seek_bar := Rectangle {

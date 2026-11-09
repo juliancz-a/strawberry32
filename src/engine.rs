@@ -1,7 +1,7 @@
 pub mod remux_proxy;
 
 use crate::addons;
-use crate::logger::{get_temp_dir, log_err, log_info, log_torrent};
+use crate::logger::{log_err, log_info, log_torrent};
 use librqbit::{
     api::Api,
     http_api::HttpApi,
@@ -139,9 +139,9 @@ enum EngineCommand {
 
 static ENGINE_TX: OnceLock<Sender<EngineCommand>> = OnceLock::new();
 
-/// Returns the cache directory on Windows RT: %TEMP%\rt_stream_cache\
+/// Returns the cache directory on Windows RT: %LOCALAPPDATA%\Strawberry32\cache\torrents\
 pub fn get_cache_dir() -> PathBuf {
-    get_temp_dir().join("rt_stream_cache")
+    crate::state::get_app_storage_root().join("cache").join("torrents")
 }
 
 /// Initializes the background tokio runtime and starts librqbit 8.0 + HttpApi server.
@@ -554,7 +554,10 @@ async fn handle_start_stream(
             let moov_range_hdr = format!("bytes={}-{}", moov_offset, (moov_offset + moov_size).saturating_sub(1));
             let _ = tokio::task::spawn_blocking(move || {
                 let client = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(10)).build();
-                let _ = client.get(&url_moov).set("Range", &moov_range_hdr).call();
+                if let Ok(resp) = client.get(&url_moov).set("Range", &moov_range_hdr).call() {
+                    let mut reader = resp.into_reader();
+                    let _ = std::io::copy(&mut reader, &mut std::io::sink());
+                }
             }).await;
         }
     } else if let Some(cues_offset) = meta.cues_offset {
@@ -563,17 +566,39 @@ async fn handle_start_stream(
         let cues_range_hdr = format!("bytes={}-{}", cues_offset, (cues_offset + 500_000).min(file_len).saturating_sub(1));
         let _ = tokio::task::spawn_blocking(move || {
             let client = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(10)).build();
-            let _ = client.get(&url_cues).set("Range", &cues_range_hdr).call();
+            if let Ok(resp) = client.get(&url_cues).set("Range", &cues_range_hdr).call() {
+                let mut reader = resp.into_reader();
+                let _ = std::io::copy(&mut reader, &mut std::io::sink());
+            }
         }).await;
+    } else {
+        // Fallback for MP4 files where moov was not in the first 64KB: prefetch last 3 MB
+        let is_mp4 = file_name.to_lowercase().ends_with(".mp4") || file_name.to_lowercase().ends_with(".m4v");
+        if is_mp4 && file_len > 3_000_000 {
+            let tail_moov_start = file_len - 3_000_000;
+            let url_tail_moov = stream_url.clone();
+            let tail_moov_hdr = format!("bytes={}-{}", tail_moov_start, file_len - 1);
+            log_torrent(&format!("Pre-fetching MP4 tail index at byte {} (3 MB) for Media Foundation...", tail_moov_start));
+            let _ = tokio::task::spawn_blocking(move || {
+                let client = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(10)).build();
+                if let Ok(resp) = client.get(&url_tail_moov).set("Range", &tail_moov_hdr).call() {
+                    let mut reader = resp.into_reader();
+                    let _ = std::io::copy(&mut reader, &mut std::io::sink());
+                }
+            }).await;
+        }
     }
 
-    // Buffer initial playback segment (4 MB) for smooth player start
-    let init_play_size = (4 * 1024 * 1024).min(file_len as usize);
+    // Buffer initial playback segment (6 MB) for smooth player start
+    let init_play_size = (6 * 1024 * 1024).min(file_len as usize);
     let url_play = stream_url.clone();
     let play_range_hdr = format!("bytes=0-{}", init_play_size.saturating_sub(1));
     let _ = tokio::task::spawn_blocking(move || {
         let client = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(10)).build();
-        let _ = client.get(&url_play).set("Range", &play_range_hdr).call();
+        if let Ok(resp) = client.get(&url_play).set("Range", &play_range_hdr).call() {
+            let mut reader = resp.into_reader();
+            let _ = std::io::copy(&mut reader, &mut std::io::sink());
+        }
     }).await;
 
     let ttfb_ms = ttfb_timer.elapsed().as_millis();

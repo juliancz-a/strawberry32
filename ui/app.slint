@@ -18,6 +18,7 @@ export component MainWindow inherits Window {
     min-width: 640px;
     min-height: 480px;
     title: "Strawberry32 - Surface RT (ARM32)";
+    icon: @image-url("icons/brand/strawberry32-icon-color.svg");
     background: Theme.bg;
 
     // Startup Splash State
@@ -124,9 +125,26 @@ export component MainWindow inherits Window {
     in-out property <string> settings_card_size: "m";
     in-out property <string> settings_storage_path: "";
 
+    // Search and Stream Filter/Sort State
+    in-out property <string> search_genre: "all";
+    in-out property <string> search_sort: "popular";
+    in-out property <bool> search_sort_asc: false;
+
+    in-out property <string> detail_stream_format: "all";
+    in-out property <string> detail_stream_res: "all";
+    in-out property <string> detail_stream_sort: "compat";
+    in-out property <bool> detail_stream_sort_asc: false;
+
     // Callbacks to Rust
     callback search_submitted(string);
     callback filter_clicked(string);
+    callback search_genre_clicked(string);
+    callback search_sort_clicked(string);
+    callback search_sort_order_toggled(bool);
+    callback detail_stream_filter_format(string);
+    callback detail_stream_filter_res(string);
+    callback detail_stream_sort_by(string);
+    callback detail_stream_sort_order(bool);
     callback quick_dev_setup();
     callback clear_logs();
     callback clear_watch_history();
@@ -382,12 +400,32 @@ export component MainWindow inherits Window {
 
                     stream_items: root.stream_items;
                     is_streams_loading: root.is_streams_loading;
+                    stream_filter_format <=> root.detail_stream_format;
+                    stream_filter_res <=> root.detail_stream_res;
+                    stream_sort_by <=> root.detail_stream_sort;
+                    stream_sort_asc <=> root.detail_stream_sort_asc;
 
                     back_clicked => { root.back_to_catalog(); }
                     play_stream_clicked(idx) => { root.play_stream_clicked(idx); }
                     play_vlc_clicked(idx) => { root.play_vlc_clicked(idx); }
                     fetch_episode_streams(id, s, e) => { root.fetch_episode_streams(id, s, e); }
                     season_selected(s) => { root.season_selected(s); }
+                    stream_filter_format_changed(fmt) => {
+                        root.detail_stream_format = fmt;
+                        root.detail_stream_filter_format(fmt);
+                    }
+                    stream_filter_res_changed(res) => {
+                        root.detail_stream_res = res;
+                        root.detail_stream_filter_res(res);
+                    }
+                    stream_sort_by_changed(s) => {
+                        root.detail_stream_sort = s;
+                        root.detail_stream_sort_by(s);
+                    }
+                    stream_sort_order_toggled(asc) => {
+                        root.detail_stream_sort_asc = asc;
+                        root.detail_stream_sort_order(asc);
+                    }
                     play_best_match => {
                         if (root.stream_items.length > 0) {
                             root.play_stream_clicked(0);
@@ -495,7 +533,7 @@ export component MainWindow inherits Window {
                             alignment: center;
                             spacing: 12px;
 
-                            // Title graphic logo if available, or bold title text
+                            // Title graphic logo if available, or Strawberry32 brand logo + bold title text
                             HorizontalLayout {
                                 alignment: center;
                                 if root.has_detail_logo : Image {
@@ -504,14 +542,27 @@ export component MainWindow inherits Window {
                                     image-fit: contain;
                                     horizontal-alignment: center;
                                 }
-                                if !root.has_detail_logo : Text {
-                                    text: root.player_title != "" ? root.player_title : "Buffering Stream";
-                                    font-size: 32px;
-                                    font-weight: 800;
-                                    color: #ffffff;
-                                    horizontal-alignment: center;
-                                    overflow: elide;
-                                    max-width: 780px;
+                                if !root.has_detail_logo : VerticalLayout {
+                                    alignment: center;
+                                    spacing: 10px;
+
+                                    Image {
+                                        source: @image-url("icons/brand/strawberry32-color.svg");
+                                        width: 72px;
+                                        height: 72px;
+                                        image-fit: contain;
+                                        horizontal-alignment: center;
+                                    }
+
+                                    Text {
+                                        text: root.player_title != "" ? root.player_title : "Buffering Stream";
+                                        font-size: 26px;
+                                        font-weight: 800;
+                                        color: #ffffff;
+                                        horizontal-alignment: center;
+                                        overflow: elide;
+                                        max-width: 780px;
+                                    }
                                 }
                             }
 
@@ -582,13 +633,35 @@ export component MainWindow inherits Window {
                 if root.current_view == 3 : SearchView {
                     search_text <=> root.search_text;
                     active_filter <=> root.active_filter;
+                    active_genre <=> root.search_genre;
+                    active_sort <=> root.search_sort;
+                    sort_asc <=> root.search_sort_asc;
                     movie_results: root.search_movie_results;
                     series_results: root.search_series_results;
+                    home_row1: root.home_row1;
+                    home_row2: root.home_row2;
+                    home_row3: root.home_row3;
+                    home_row4: root.home_row4;
                     is_searching: root.is_searching;
                     card_size: root.settings_card_size;
 
                     search_submitted(q) => { root.search_submitted(q); }
-                    filter_clicked(f) => { root.filter_clicked(f); }
+                    filter_clicked(f) => {
+                        root.active_filter = f;
+                        root.filter_clicked(f);
+                    }
+                    genre_clicked(g) => {
+                        root.search_genre = g;
+                        root.search_genre_clicked(g);
+                    }
+                    sort_clicked(s) => {
+                        root.search_sort = s;
+                        root.search_sort_clicked(s);
+                    }
+                    sort_order_toggled(asc) => {
+                        root.search_sort_asc = asc;
+                        root.search_sort_order_toggled(asc);
+                    }
                     card_selected(id, type) => { root.card_selected(id, type); }
                     request_lazy_range(row, start, end) => { root.request_lazy_range(row, start, end); }
                 }
@@ -679,9 +752,11 @@ export component MainWindow inherits Window {
                 alignment: center;
                 spacing: 12px;
 
-                Text {
-                    text: "🍓";
-                    font-size: 64px;
+                Image {
+                    source: @image-url("icons/brand/strawberry32-color.svg");
+                    width: 96px;
+                    height: 96px;
+                    image-fit: contain;
                     horizontal-alignment: center;
                 }
 

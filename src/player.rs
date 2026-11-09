@@ -1,4 +1,4 @@
-use crate::logger::{get_temp_dir, log_err, log_player, log_win32_err};
+use crate::logger::{log_err, log_player, log_win32_err};
 use crate::subtitles;
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
@@ -336,14 +336,14 @@ pub fn get_volume() -> f32 {
     1.0
 }
 
-/// Sets audio mute state via IMFPMediaPlayer::SetMute (vtable index 22)
+/// Sets audio mute state via IMFPMediaPlayer::SetMute (vtable index 24)
 pub fn set_muted(mute: bool) -> Result<(), String> {
     let guard = EMBEDDED_PLAYER.lock().unwrap();
     if let Some(state) = guard.as_ref() {
         unsafe {
             if !state.p_player.is_null() {
                 let f_mute = if mute { 1i32 } else { 0i32 };
-                let hr = com_call_1(state.p_player, 22, f_mute);
+                let hr = com_call_1(state.p_player, 24, f_mute);
                 if hr >= 0 {
                     log_player(if mute { "Audio muted." } else { "Audio unmuted." });
                     return Ok(());
@@ -356,14 +356,14 @@ pub fn set_muted(mute: bool) -> Result<(), String> {
     Err("No active player".to_string())
 }
 
-/// Gets audio mute state via IMFPMediaPlayer::GetMute (vtable index 21)
+/// Gets audio mute state via IMFPMediaPlayer::GetMute (vtable index 23)
 pub fn get_muted() -> bool {
     let guard = EMBEDDED_PLAYER.lock().unwrap();
     if let Some(state) = guard.as_ref() {
         unsafe {
             if !state.p_player.is_null() {
                 let mut f_mute: i32 = 0;
-                let hr = com_call_1(state.p_player, 21, &mut f_mute as *mut i32);
+                let hr = com_call_1(state.p_player, 23, &mut f_mute as *mut i32);
                 if hr >= 0 {
                     return f_mute != 0;
                 }
@@ -627,7 +627,7 @@ pub fn prompt_open_vlc_dialog(hwnd: HWND) -> Option<PathBuf> {
 }
 
 pub fn get_vlc_path() -> Option<PathBuf> {
-    let conf_path = get_temp_dir().join("rt_stream_data").join("vlc_path.txt");
+    let conf_path = crate::state::get_app_storage_root().join("data").join("vlc_path.txt");
     if conf_path.is_file() {
         if let Ok(content) = std::fs::read_to_string(&conf_path) {
             let p = PathBuf::from(content.trim());
@@ -654,7 +654,7 @@ pub fn get_vlc_path() -> Option<PathBuf> {
 }
 
 pub fn save_vlc_path(path: &Path) -> Result<(), String> {
-    let dir = get_temp_dir().join("rt_stream_data");
+    let dir = crate::state::get_app_storage_root().join("data");
     let _ = std::fs::create_dir_all(&dir);
     let conf_path = dir.join("vlc_path.txt");
     std::fs::write(&conf_path, path.to_string_lossy().as_bytes())
