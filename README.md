@@ -22,9 +22,10 @@
 
 By combining **Rust**, **Slint CPU Software Rendering**, **librqbit**, and low-level **Windows Media Foundation** APIs, Strawberry32 bypasses modern heavy web runtimes, delivering smooth 720p/1080p video playback and fluid catalog navigation within a tight 2 GB RAM budget and low-power Tegra 3 SoC.
 
-<!-- PLACEHOLDER: Main Application Showcase -->
-> _<!-- [Screenshot Placeholder: Strawberry32 Home Screen with Hero Banner and Catalog Rows] -->_
-> `![Strawberry32 Home Interface](docs/images/screenshot-home.png)`
+<!-- Main Application Showcase -->
+<p align="center">
+  <img src="ui/screenshots/home_view.png" width="850" alt="Strawberry32 Home Interface on Windows RT 8.1"/>
+</p>
 
 ---
 
@@ -51,15 +52,18 @@ By combining **Rust**, **Slint CPU Software Rendering**, **librqbit**, and low-l
 
 ## 📸 Screenshots & Previews
 
-<!-- PLACEHOLDER: Application Screenshots Gallery -->
-
 | Home Catalog & Hero Banner | Search with Interactive Filter Chips |
 | :---: | :---: |
-| _<!-- [Screenshot: Home Catalog Row scrolling on Tegra 3] -->_<br>`![Home View](docs/images/screenshot-home.png)` | _<!-- [Screenshot: Search tab with Genre and Sort chips] -->_<br>`![Search & Filters](docs/images/screenshot-search.png)` |
+| <img src="ui/screenshots/home_view.png" width="450" alt="Home View"/><br><sub>Featured Cinemeta catalog rows and high-res Hero Banner on Tegra 3</sub> | <img src="ui/screenshots/search_view.png" width="450" alt="Search & Filters"/><br><sub>Dedicated Search tab with Genre and Sort chips and instant discovery</sub> |
 
 | Detail View & Stream Selection | In-Player Hardware Playback & Subtitles |
 | :---: | :---: |
-| _<!-- [Screenshot: Movie detail with stream filters] -->_<br>`![Detail View](docs/images/screenshot-detail.png)` | _<!-- [Screenshot: Hardware accelerated playback with transparent subtitle overlay] -->_<br>`![Player View](docs/images/screenshot-player.png)` |
+| <img src="ui/screenshots/details_view.png" width="450" alt="Detail View"/><br><sub>Cinemeta metadata, IMDb ratings, and smart stream compatibility badges</sub> | <img src="ui/screenshots/media_player_view.png" width="450" alt="Player View"/><br><sub>Windows Media Foundation H.264 hardware decoding with true transparent GDI subtitles</sub> |
+
+<p align="center">
+  <img src="ui/screenshots/settings_view.png" width="700" alt="Settings & Add-on Manager"/><br/>
+  <sub>Extensive Settings: Add-on manager with priority ordering, streaming limits, card sizing, and storage cache cleaner</sub>
+</p>
 
 ---
 

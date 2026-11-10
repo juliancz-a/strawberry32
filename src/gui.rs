@@ -84,6 +84,7 @@ pub fn update_home_row_slice(ui: &MainWindow, row_idx: usize) {
         return;
     }
     let page_size = compute_cards_per_page(ui);
+    ui.set_cards_per_row(page_size as i32);
     let mut offsets = HOME_ROW_OFFSETS.lock().unwrap();
     if offsets[row_idx] >= total {
         offsets[row_idx] = 0;
@@ -127,6 +128,8 @@ pub fn update_home_row_slice(ui: &MainWindow, row_idx: usize) {
 }
 
 pub fn refresh_all_home_slices(ui: &MainWindow) {
+    let page_size = compute_cards_per_page(ui);
+    ui.set_cards_per_row(page_size as i32);
     for i in 0..6 {
         update_home_row_slice(ui, i);
     }
@@ -229,6 +232,18 @@ unsafe extern "system" fn slint_main_wnd_proc(
     const VK_RIGHT: usize = 0x27;
     const VK_DOWN: usize = 0x28;
     const VK_ESCAPE: usize = 0x1B;
+    const WM_CLOSE: u32 = 0x0010;
+    const WM_DESTROY: u32 = 0x0002;
+
+    if msg == WM_CLOSE || msg == WM_DESTROY {
+        crate::logger::log_info("MainWindow received WM_CLOSE/WM_DESTROY: stopping player, overlay, and torrent engine");
+        player::stop_embedded_player();
+        crate::ui::overlay::hide_overlay();
+        crate::engine::stop_active_stream();
+        unsafe {
+            windows_sys::Win32::System::Threading::ExitProcess(0);
+        }
+    }
 
     if msg == WM_GETMINMAXINFO && lparam != 0 {
         let mmi = lparam as *mut windows_sys::Win32::UI::WindowsAndMessaging::MINMAXINFO;
