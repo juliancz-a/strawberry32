@@ -9,6 +9,7 @@ use librqbit::{
     AddTorrent, AddTorrentOptions, AddTorrentResponse, Session,
     SessionOptions,
 };
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Mutex, OnceLock};
@@ -134,12 +135,20 @@ enum EngineCommand {
         trackers: Vec<String>,
         resp: Sender<Result<String, String>>,
     },
+    StopActiveStream,
     ClearCache {
         resp: Sender<Result<usize, String>>,
     },
 }
 
 static ENGINE_TX: OnceLock<Sender<EngineCommand>> = OnceLock::new();
+static ACTIVE_TORRENT_ID: Mutex<Option<usize>> = Mutex::new(None);
+
+pub fn stop_active_stream() {
+    if let Some(tx) = ENGINE_TX.get() {
+        let _ = tx.send(EngineCommand::StopActiveStream);
+    }
+}
 
 /// Returns the cache directory on Windows RT: %LOCALAPPDATA%\Strawberry32\cache\torrents\
 pub fn get_cache_dir() -> PathBuf {
@@ -244,6 +253,9 @@ pub fn start_engine() -> Result<(), String> {
                             let result = handle_start_stream(&session, &info_hash, file_idx, season, episode, trackers).await;
                             let _ = resp.send(result);
                         }
+                        EngineCommand::StopActiveStream => {
+                            stop_previous_torrent(&session).await;
+                        }
                         EngineCommand::ClearCache { resp } => {
                             let result = handle_clear_cache(&cache_dir);
                             let _ = resp.send(result);
@@ -257,6 +269,20 @@ pub fn start_engine() -> Result<(), String> {
     Ok(())
 }
 
+async fn stop_previous_torrent(session: &std::sync::Arc<Session>) {
+    crate::engine::remux_proxy::bump_stream_generation();
+    let old_id = {
+        let mut guard = ACTIVE_TORRENT_ID.lock().unwrap();
+        guard.take()
+    };
+    if let Some(id) = old_id {
+        let delete_files = !crate::state::load_settings().cache.keep_after_playback;
+        log_torrent(&format!("[ENGINE] Parando y liberando torrent activo id={} de la RAM (delete_files: {})", id, delete_files));
+        let _ = session.delete(librqbit::api::TorrentIdOrHash::Id(id), delete_files).await;
+    }
+    crate::engine::remux_proxy::clear_mkv_cache();
+}
+
 /// Asynchronously resolves torrent metadata, performs smart MP4 Header + Tail moov atom
 /// pre-fetching, and returns local streaming URL.
 async fn handle_start_stream(
@@ -267,6 +293,7 @@ async fn handle_start_stream(
     episode: Option<u32>,
     trackers: Vec<String>,
 ) -> Result<String, String> {
+    stop_previous_torrent(session).await;
     let t_fast_start = std::time::Instant::now();
     log_torrent(&format!("Preparing stream for infoHash: {}", info_hash));
 
@@ -352,6 +379,8 @@ async fn handle_start_stream(
             return Err(msg);
         }
     };
+
+    *ACTIVE_TORRENT_ID.lock().unwrap() = Some(torrent_id);
 
     log_torrent("Waiting for metadata resolution (60s max)...");
 
@@ -479,6 +508,10 @@ async fn handle_start_stream(
     // Register file info with the local proxy/remuxer server
     remux_proxy::register_file_info(torrent_id, chosen_idx, &file_name, file_len);
 
+    let is_mkv = file_name.to_lowercase().ends_with(".mkv")
+        || file_name.to_lowercase().ends_with(".webm");
+    crate::player::set_stream_container_info(is_mkv, 0);
+
     let stream_url = format!("http://127.0.0.1:3030/torrents/{}/stream/{}", torrent_id, chosen_idx);
 
     // Track active folder for protected cache cleaning
@@ -486,16 +519,20 @@ async fn handle_start_stream(
     crate::cache_cleaner::set_active_torrent_dir(Some(active_torrent_folder));
 
     // PART 2: SMART CONTAINER METADATA INSPECTION & TARGETED PRE-BUFFERING
+    // NOTE: librqbit's internal streaming HTTP server only supports open-ended range headers
+    // of the format `bytes={offset}-` (requires trailing hyphen via s.strip_suffix('-')).
+    // We MUST use `bytes={offset}-` and constrain reader consumption with `.take(limit)`
+    // so std::io::copy never attempts to read past the target chunk into an unbounded Vec.
     let head_chunk_size = 131_072usize.min(file_len as usize); // 128 KB
     let url_head = stream_url.clone();
-    let head_range_hdr = format!("bytes=0-{}", head_chunk_size.saturating_sub(1));
+    let head_range_hdr = "bytes=0-".to_string();
     let head_handle = tokio::task::spawn_blocking(move || -> Vec<u8> {
         let client = ureq::AgentBuilder::new()
             .timeout_connect(Duration::from_secs(10))
             .timeout_read(Duration::from_secs(60))
             .build();
         if let Ok(resp) = client.get(&url_head).set("Range", &head_range_hdr).call() {
-            let mut reader = resp.into_reader();
+            let mut reader = Read::take(resp.into_reader(), head_chunk_size as u64);
             let mut buf = Vec::with_capacity(head_chunk_size);
             let _ = std::io::copy(&mut reader, &mut buf);
             buf
@@ -511,7 +548,7 @@ async fn handle_start_stream(
     let tail_chunk_size = 65536u64.min(file_len);
     let tail_start = file_len.saturating_sub(tail_chunk_size);
     let url_tail = stream_url.clone();
-    let tail_range_hdr = format!("bytes={}-{}", tail_start, file_len.saturating_sub(1));
+    let tail_range_hdr = format!("bytes={}-", tail_start);
     let head_bytes_for_hash = head_bytes.clone();
     tokio::spawn(async move {
         let tail_bytes = tokio::task::spawn_blocking(move || -> Vec<u8> {
@@ -520,7 +557,7 @@ async fn handle_start_stream(
                 .timeout_read(Duration::from_secs(60))
                 .build();
             if let Ok(resp) = client.get(&url_tail).set("Range", &tail_range_hdr).call() {
-                let mut reader = resp.into_reader();
+                let mut reader = Read::take(resp.into_reader(), tail_chunk_size);
                 let mut buf = Vec::with_capacity(tail_chunk_size as usize);
                 let _ = std::io::copy(&mut reader, &mut buf);
                 buf
@@ -554,11 +591,11 @@ async fn handle_start_stream(
                 moov_offset, moov_size / 1024
             ));
             let url_moov = stream_url.clone();
-            let moov_range_hdr = format!("bytes={}-{}", moov_offset, (moov_offset + moov_size).saturating_sub(1));
+            let moov_range_hdr = format!("bytes={}-", moov_offset);
             let _ = tokio::task::spawn_blocking(move || {
                 let client = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(10)).build();
                 if let Ok(resp) = client.get(&url_moov).set("Range", &moov_range_hdr).call() {
-                    let mut reader = resp.into_reader();
+                    let mut reader = Read::take(resp.into_reader(), moov_size);
                     let _ = std::io::copy(&mut reader, &mut std::io::sink());
                 }
             }).await;
@@ -566,12 +603,12 @@ async fn handle_start_stream(
     } else if let Some(cues_offset) = meta.cues_offset {
         log_torrent(&format!("Pre-fetching MKV Cues index at {} in background...", cues_offset));
         let url_cues = stream_url.clone();
-        let cues_range_hdr = format!("bytes={}-{}", cues_offset, (cues_offset + 500_000).min(file_len).saturating_sub(1));
+        let cues_range_hdr = format!("bytes={}-", cues_offset);
         tokio::spawn(async move {
             let _ = tokio::task::spawn_blocking(move || {
                 let client = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(10)).build();
                 if let Ok(resp) = client.get(&url_cues).set("Range", &cues_range_hdr).call() {
-                    let mut reader = resp.into_reader();
+                    let mut reader = Read::take(resp.into_reader(), 500_000);
                     let _ = std::io::copy(&mut reader, &mut std::io::sink());
                 }
             }).await;
@@ -582,12 +619,12 @@ async fn handle_start_stream(
         if is_mp4 && file_len > 3_000_000 {
             let tail_moov_start = file_len - 3_000_000;
             let url_tail_moov = stream_url.clone();
-            let tail_moov_hdr = format!("bytes={}-{}", tail_moov_start, file_len - 1);
+            let tail_moov_hdr = format!("bytes={}-", tail_moov_start);
             log_torrent(&format!("Pre-fetching MP4 tail index at byte {} (3 MB) for Media Foundation...", tail_moov_start));
             let _ = tokio::task::spawn_blocking(move || {
                 let client = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(10)).build();
                 if let Ok(resp) = client.get(&url_tail_moov).set("Range", &tail_moov_hdr).call() {
-                    let mut reader = resp.into_reader();
+                    let mut reader = Read::take(resp.into_reader(), 3_000_000);
                     let _ = std::io::copy(&mut reader, &mut std::io::sink());
                 }
             }).await;
@@ -602,12 +639,12 @@ async fn handle_start_stream(
         (1_572_864usize).min(file_len as usize) // 1.5 MB for 720p / MKV
     };
     let url_play = stream_url.clone();
-    let play_range_hdr = format!("bytes=0-{}", init_play_size.saturating_sub(1));
+    let play_range_hdr = "bytes=0-".to_string();
     let t_buf_start = std::time::Instant::now();
     let _ = tokio::task::spawn_blocking(move || {
         let client = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(10)).build();
         if let Ok(resp) = client.get(&url_play).set("Range", &play_range_hdr).call() {
-            let mut reader = resp.into_reader();
+            let mut reader = Read::take(resp.into_reader(), init_play_size as u64);
             let mut chunk = [0u8; 65536];
             let mut total_read = 0usize;
             while total_read < init_play_size {
@@ -653,8 +690,9 @@ async fn handle_start_stream(
         guard.progress_mb = 4.0;
     }
 
-    // Return the local remux/proxy URL with explicit .mp4 extension for Windows RT Media Foundation
-    let proxy_url = format!("http://127.0.0.1:3031/play/{}/{}/movie.mp4", torrent_id, chosen_idx);
+    // Return the local remux/proxy URL always ending in .mp4 for Windows RT Media Foundation MPEG4ByteStreamHandler
+    let stream_name = if is_mkv { "mkv_stream.mp4" } else { "mp4_stream.mp4" };
+    let proxy_url = format!("http://127.0.0.1:3031/play/{}/{}/{}", torrent_id, chosen_idx, stream_name);
     log_torrent(&format!("[PROXY] Local streaming URL for embedded player: {}", proxy_url));
 
     Ok(proxy_url)

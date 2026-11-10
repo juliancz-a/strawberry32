@@ -305,7 +305,7 @@ component PlayerIconBtn inherits Rectangle {
 
 export component PlayerOverlay inherits Window {
     no-frame: true;
-    background: #00000000;
+    background: #101011;
 
     in-out property <string> title_text: "Strawberry32 Player";
     in-out property <string> time_str: "00:00 / 00:00";
@@ -993,45 +993,8 @@ export component PlayerOverlay inherits Window {
         }
     }
 
-    // PURE OVERLAY SUBTITLES (Consistent fixed height, 100% transparent background, NO jumping)
-    if root.subtitles_enabled && root.subtitle_text != "" : Rectangle {
-        x: (parent.width - self.width) / 2;
-        y: parent.height - 124px;
-        width: min(700px, parent.width - 40px);
-        height: 44px;
-        background: #00000000; // 100% transparent
-
-        sub_touch := TouchArea {
-            width: 100%;
-            height: 100%;
-            clicked => {
-                root.user_activity();
-            }
-        }
-
-        HorizontalLayout {
-            alignment: center;
-            Rectangle {
-                background: #00000000; // 100% transparent - no background bar obscuring the video
-
-                HorizontalLayout {
-                    padding-left: 14px;
-                    padding-right: 14px;
-                    padding-top: 4px;
-                    padding-bottom: 4px;
-
-                    Text {
-                        text: root.subtitle_text;
-                        color: #FFFF55;
-                        font-size: root.sub_size == 0 ? 15px : (root.sub_size == 1 ? 18px : 22px);
-                        font-weight: 700;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-            }
-        }
-    }
+    // Subtitles are rendered directly by native Win32 GDI child window (SUBTITLE_HWND)
+    // in src/ui/overlay.rs to guarantee pixel-perfect outline stenciling and zero clipping.
 
     // Bottom transport bar (solid opaque #101011, fixed height 74px)
     if controls_visible : Rectangle {
@@ -1108,6 +1071,7 @@ export component PlayerOverlay inherits Window {
                 HorizontalLayout {
                     x: 0px;
                     y: (parent.height - self.height) / 2;
+                    width: 160px;
                     alignment: start;
                     Text {
                         text: root.time_str;
@@ -1120,6 +1084,7 @@ export component PlayerOverlay inherits Window {
 
                 // Center: Rewind 10s, Play/Pause, Forward 10s, Next Episode (EXACT HORIZONTAL CENTER)
                 HorizontalLayout {
+                    width: root.has_next_episode ? 266px : 190px;
                     x: (parent.width - self.width) / 2;
                     y: (parent.height - self.height) / 2;
                     spacing: 8px;
@@ -1164,6 +1129,7 @@ export component PlayerOverlay inherits Window {
 
                 // Right: Subtitles, Volume (Mute + 96px slider + %), Fullscreen
                 HorizontalLayout {
+                    width: 260px;
                     x: parent.width - self.width;
                     y: (parent.height - self.height) / 2;
                     spacing: 8px;

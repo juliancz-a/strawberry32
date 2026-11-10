@@ -124,6 +124,38 @@ static KNOWN_DURATION_MS: AtomicU64 = AtomicU64::new(0);
 static SEEK_BASE_OFFSET_MS: AtomicU64 = AtomicU64::new(0);
 static MF_INITIALIZED: Mutex<bool> = Mutex::new(false);
 
+pub fn refresh_video_window() {
+    let guard = EMBEDDED_PLAYER.lock().unwrap();
+    if let Some(state) = guard.as_ref() {
+        unsafe {
+            if !state.video_hwnd.is_null() {
+                windows_sys::Win32::Graphics::Gdi::InvalidateRect(state.video_hwnd, std::ptr::null(), 0);
+                windows_sys::Win32::Graphics::Gdi::UpdateWindow(state.video_hwnd);
+            }
+            if !state.p_player.is_null() {
+                let _ = com_call_0(state.p_player, 32); // IMFPMediaPlayer::UpdateVideo
+            }
+        }
+    }
+}
+
+pub fn set_stream_container_info(is_mkv: bool, duration_ms: u64) {
+    IS_MKV_STREAM.store(is_mkv, Ordering::SeqCst);
+    if duration_ms > 0 {
+        KNOWN_DURATION_MS.store(duration_ms, Ordering::SeqCst);
+    }
+}
+
+pub fn set_known_duration_ms(duration_ms: u64) {
+    if duration_ms > 0 {
+        KNOWN_DURATION_MS.store(duration_ms, Ordering::SeqCst);
+    }
+}
+
+pub fn set_seek_base_offset_ms(offset_ms: u64) {
+    SEEK_BASE_OFFSET_MS.store(offset_ms, Ordering::SeqCst);
+}
+
 pub fn ensure_mf_started() {
     let mut guard = MF_INITIALIZED.lock().unwrap();
     if !*guard {
@@ -200,7 +232,11 @@ pub fn init_embedded_player(video_hwnd: HWND, stream_url: &str) -> Result<(), St
     ensure_mf_started();
 
     *CURRENT_STREAM_URL.lock().unwrap() = stream_url.to_string();
-    let is_mkv = stream_url.to_lowercase().contains(".mkv") || stream_url.contains(":3031/play/");
+    let lower_url = stream_url.to_lowercase();
+    let is_mkv = lower_url.contains("mkv_stream.mp4")
+        || lower_url.contains(".mkv")
+        || lower_url.contains(".webm")
+        || IS_MKV_STREAM.load(Ordering::SeqCst);
     IS_MKV_STREAM.store(is_mkv, Ordering::SeqCst);
     if !stream_url.contains("start=") {
         SEEK_BASE_OFFSET_MS.store(0, Ordering::SeqCst);
@@ -414,6 +450,11 @@ pub fn seek_relative(seconds: i32) -> Result<(), String> {
         if dur_ms > 0 && target_ms > dur_ms {
             target_ms = dur_ms;
         }
+        let pct = if dur_ms > 0 {
+            (target_ms as f64 / dur_ms as f64).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         let (video_hwnd, current_url) = {
             let guard = EMBEDDED_PLAYER.lock().unwrap();
             if let Some(state) = guard.as_ref() {
@@ -424,7 +465,7 @@ pub fn seek_relative(seconds: i32) -> Result<(), String> {
             }
         };
         let clean_url = current_url.split('?').next().unwrap_or(&current_url);
-        let new_url = format!("{}?start={}", clean_url, target_ms);
+        let new_url = format!("{}?start={}&pct={:.4}", clean_url, target_ms, pct);
         SEEK_BASE_OFFSET_MS.store(target_ms, Ordering::SeqCst);
         log_player(&format!("[MKV SEEK RELATIVE] Reconnecting player to {} (delta: {}s, target: {} ms)", new_url, seconds, target_ms));
         return init_embedded_player(video_hwnd, &new_url);
@@ -442,7 +483,13 @@ pub fn seek_relative(seconds: i32) -> Result<(), String> {
             let _ = com_call_2(state.p_player, 9, &GUID_NULL as *const GUID as *const c_void, &mut pv_dur as *mut PROPVARIANT as *mut c_void);
 
             let cur_100ns = pv_cur.hVal;
-            let dur_100ns = pv_dur.hVal;
+            let mut dur_100ns = pv_dur.hVal;
+            if dur_100ns <= 0 {
+                let known_ms = KNOWN_DURATION_MS.load(Ordering::SeqCst);
+                if known_ms > 0 {
+                    dur_100ns = (known_ms as i64) * 10_000;
+                }
+            }
             let delta_100ns = (seconds as i64) * 10_000_000;
             let mut new_pos = cur_100ns + delta_100ns;
             if new_pos < 0 { new_pos = 0; }
@@ -470,10 +517,14 @@ pub fn get_playback_progress() -> (u64, u64, f32) {
                 let mut pv_dur: PROPVARIANT = std::mem::zeroed();
                 let hr_cur = com_call_2(state.p_player, 8, &GUID_NULL as *const GUID as *const c_void, &mut pv_cur as *mut PROPVARIANT as *mut c_void);
                 let hr_dur = com_call_2(state.p_player, 9, &GUID_NULL as *const GUID as *const c_void, &mut pv_dur as *mut PROPVARIANT as *mut c_void);
-                if hr_cur >= 0 && hr_dur >= 0 {
+                if hr_cur >= 0 {
                     let base_offset = SEEK_BASE_OFFSET_MS.load(Ordering::SeqCst);
                     let raw_pos_ms = (pv_cur.hVal.max(0) / 10_000) as u64;
-                    let raw_dur_ms = (pv_dur.hVal.max(0) / 10_000) as u64;
+                    let raw_dur_ms = if hr_dur >= 0 && pv_dur.hVal > 0 {
+                        (pv_dur.hVal / 10_000) as u64
+                    } else {
+                        0
+                    };
                     let known_dur = KNOWN_DURATION_MS.load(Ordering::SeqCst);
                     let effective_dur = known_dur.max(raw_dur_ms);
                     if raw_dur_ms > 0 && known_dur < raw_dur_ms {
@@ -496,6 +547,7 @@ pub fn get_playback_progress() -> (u64, u64, f32) {
 /// Seeks to absolute percentage (0.0 to 1.0)
 pub fn seek_percent(pct: f32) -> Result<(), String> {
     let is_mkv = IS_MKV_STREAM.load(Ordering::SeqCst);
+    let pct_clamped = pct.clamp(0.0, 1.0);
     if is_mkv {
         let (video_hwnd, current_url) = {
             let guard = EMBEDDED_PLAYER.lock().unwrap();
@@ -507,11 +559,11 @@ pub fn seek_percent(pct: f32) -> Result<(), String> {
             }
         };
         let dur_ms = KNOWN_DURATION_MS.load(Ordering::SeqCst);
-        let target_ms = ((dur_ms as f64) * (pct.clamp(0.0, 1.0) as f64)) as u64;
+        let target_ms = ((dur_ms as f64) * (pct_clamped as f64)) as u64;
         let clean_url = current_url.split('?').next().unwrap_or(&current_url);
-        let new_url = format!("{}?start={}", clean_url, target_ms);
+        let new_url = format!("{}?start={}&pct={:.4}", clean_url, target_ms, pct_clamped);
         SEEK_BASE_OFFSET_MS.store(target_ms, Ordering::SeqCst);
-        log_player(&format!("[MKV SEEK PERCENT] Reconnecting player to {} (pct: {:.1}%, target: {} ms)", new_url, pct * 100.0, target_ms));
+        log_player(&format!("[MKV SEEK PERCENT] Reconnecting player to {} (pct: {:.1}%, target: {} ms)", new_url, pct_clamped * 100.0, target_ms));
         return init_embedded_player(video_hwnd, &new_url);
     }
 
@@ -523,16 +575,22 @@ pub fn seek_percent(pct: f32) -> Result<(), String> {
             }
             let mut pv_dur: PROPVARIANT = std::mem::zeroed();
             let _ = com_call_2(state.p_player, 9, &GUID_NULL as *const GUID as *const c_void, &mut pv_dur as *mut PROPVARIANT as *mut c_void);
-            let dur_100ns = pv_dur.hVal;
+            let mut dur_100ns = pv_dur.hVal;
+            if dur_100ns <= 0 {
+                let known_ms = KNOWN_DURATION_MS.load(Ordering::SeqCst);
+                if known_ms > 0 {
+                    dur_100ns = (known_ms as i64) * 10_000;
+                }
+            }
             if dur_100ns <= 0 {
                 return Err("Unknown duration".to_string());
             }
-            let target_100ns = ((dur_100ns as f64) * (pct.clamp(0.0, 1.0) as f64)) as i64;
+            let target_100ns = ((dur_100ns as f64) * (pct_clamped as f64)) as i64;
             let mut pv_new = PROPVARIANT::default();
             pv_new.vt = 20; // VT_I8
             pv_new.hVal = target_100ns;
             let _ = com_call_2(state.p_player, 7, &GUID_NULL as *const GUID as *const c_void, &pv_new as *const PROPVARIANT as *const c_void);
-            log_player(&format!("Seeked to percent: {:.1}%", pct * 100.0));
+            log_player(&format!("Seeked to percent: {:.1}%", pct_clamped * 100.0));
             Ok(())
         }
     } else {
@@ -559,19 +617,8 @@ pub fn toggle_fullscreen() -> Result<bool, String> {
 
 /// Returns current playback position in milliseconds
 pub fn get_playback_pos_ms() -> u64 {
-    let guard = EMBEDDED_PLAYER.lock().unwrap();
-    if let Some(state) = guard.as_ref() {
-        unsafe {
-            if !state.p_player.is_null() {
-                let mut pv_cur: PROPVARIANT = std::mem::zeroed();
-                let hr = com_call_2(state.p_player, 8, &GUID_NULL as *const GUID as *const c_void, &mut pv_cur as *mut PROPVARIANT as *mut c_void);
-                if hr >= 0 && pv_cur.hVal > 0 {
-                    return (pv_cur.hVal / 10_000) as u64; // 100ns to ms
-                }
-            }
-        }
-    }
-    0
+    let (pos, _, _) = get_playback_progress();
+    pos
 }
 
 /// Returns active subtitle text for the current video position (if any)
@@ -582,37 +629,31 @@ pub fn get_current_subtitle() -> Option<String> {
 
 /// Returns formatted playback position and duration: "MM:SS / MM:SS"
 pub fn get_playback_time_str() -> String {
-    let guard = EMBEDDED_PLAYER.lock().unwrap();
-    if let Some(state) = guard.as_ref() {
-        unsafe {
-            if !state.p_player.is_null() {
-                let mut pv_cur: PROPVARIANT = std::mem::zeroed();
-                let mut pv_dur: PROPVARIANT = std::mem::zeroed();
-                let hr_pos = com_call_2(state.p_player, 8, &GUID_NULL as *const GUID as *const c_void, &mut pv_cur as *mut PROPVARIANT as *mut c_void);
-                let hr_dur = com_call_2(state.p_player, 9, &GUID_NULL as *const GUID as *const c_void, &mut pv_dur as *mut PROPVARIANT as *mut c_void);
-
-                if hr_pos >= 0 && hr_dur >= 0 && pv_dur.hVal > 0 {
-                    let cur_sec = (pv_cur.hVal / 10_000_000).max(0);
-                    let dur_sec = (pv_dur.hVal / 10_000_000).max(0);
-                    return format!("{:02}:{:02} / {:02}:{:02}", cur_sec / 60, cur_sec % 60, dur_sec / 60, dur_sec % 60);
-                } else if hr_pos >= 0 && pv_cur.hVal > 0 {
-                    let cur_sec = (pv_cur.hVal / 10_000_000).max(0);
-                    return format!("{:02}:{:02} / --:--", cur_sec / 60, cur_sec % 60);
-                } else {
+    let (cur_ms, dur_ms, _) = get_playback_progress();
+    let cur_sec = cur_ms / 1000;
+    if dur_ms > 0 {
+        let dur_sec = dur_ms / 1000;
+        format!("{:02}:{:02} / {:02}:{:02}", cur_sec / 60, cur_sec % 60, dur_sec / 60, dur_sec % 60)
+    } else if cur_sec > 0 {
+        format!("{:02}:{:02} / --:--", cur_sec / 60, cur_sec % 60)
+    } else {
+        let guard = EMBEDDED_PLAYER.lock().unwrap();
+        if let Some(state) = guard.as_ref() {
+            unsafe {
+                if !state.p_player.is_null() {
                     let mut st: u32 = 0;
                     let _ = com_call_1(state.p_player, 13, &mut st as *mut u32);
                     match st {
                         0 => return "Connecting stream...".to_string(),
                         1 => return "Stopped".to_string(),
                         2 => return "Buffering / Playing...".to_string(),
-                        3 => return "Paused".to_string(),
                         _ => {}
                     }
                 }
             }
         }
+        "00:00 / --:--".to_string()
     }
-    "00:00 / 00:00".to_string()
 }
 
 // -------------------------------------------------------------------------------------------------

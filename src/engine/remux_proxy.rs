@@ -2,6 +2,7 @@ use crate::logger::{log_err, log_torrent};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -13,6 +14,18 @@ pub struct FileMeta {
 
 static FILE_REGISTRY: OnceLock<Mutex<HashMap<(usize, usize), FileMeta>>> = OnceLock::new();
 static PROXY_STARTED: OnceLock<bool> = OnceLock::new();
+static STREAM_GEN_ID: AtomicU64 = AtomicU64::new(0);
+
+pub fn bump_stream_generation() -> u64 {
+    STREAM_GEN_ID.fetch_add(1, Ordering::SeqCst) + 1
+}
+
+pub fn clear_mkv_cache() {
+    let mut guard = CACHED_MKV_INFO.lock().unwrap();
+    if let Some(map) = guard.as_mut() {
+        map.clear();
+    }
+}
 
 fn registry() -> &'static Mutex<HashMap<(usize, usize), FileMeta>> {
     FILE_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
@@ -97,6 +110,16 @@ fn parse_start_ms(path: &str) -> u64 {
     }
 }
 
+fn parse_start_pct(path: &str) -> f64 {
+    if let Some(pos) = path.find("pct=") {
+        let sub = &path[pos + 4..];
+        let end = sub.find('&').unwrap_or(sub.len());
+        sub[..end].parse::<f64>().unwrap_or(0.0).clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
 fn serve_meta_json(client: &mut TcpStream, torrent_id: usize, file_idx: usize) -> Result<(), String> {
     let meta = {
         let guard = registry().lock().unwrap();
@@ -157,6 +180,7 @@ fn handle_client(mut client: TcpStream) -> Result<(), String> {
     };
 
     let start_ms = parse_start_ms(path);
+    let start_pct = parse_start_pct(path);
 
     let mut range_header: Option<String> = None;
     for line in lines {
@@ -183,12 +207,19 @@ fn handle_client(mut client: TcpStream) -> Result<(), String> {
         torrent_id, file_idx
     );
 
+    let is_primary_stream = range_header.is_none() || range_header.as_deref() == Some("bytes=0-") || start_ms > 0 || start_pct > 0.0;
+    let my_gen = if is_primary_stream {
+        bump_stream_generation()
+    } else {
+        STREAM_GEN_ID.load(Ordering::Relaxed)
+    };
+
     if is_mkv {
         log_torrent(&format!(
-            "[PROXY] Detectado contenedor MKV ('{}') -> Iniciando Remux en vivo MKV a fMP4 para Media Foundation (start: {} ms)",
-            file_name, start_ms
+            "[PROXY] Detectado contenedor MKV ('{}') -> Iniciando Remux en vivo MKV a fMP4 para Media Foundation (gen: {}, start: {} ms, pct: {:.4})",
+            file_name, my_gen, start_ms, start_pct
         ));
-        return serve_mkv_as_fmp4(&mut client, method, &upstream_url, start_ms, torrent_id, file_idx, file_len);
+        return serve_mkv_as_fmp4(&mut client, method, &upstream_url, start_ms, start_pct, torrent_id, file_idx, file_len, my_gen);
     }
 
     // --- FLUJO NATIVO MP4 (Sin truncamiento de 4MB que rompía Media Foundation) ---
@@ -241,11 +272,8 @@ fn handle_client(mut client: TcpStream) -> Result<(), String> {
         .build();
 
     let mut req = agent.get(&upstream_url);
-    if file_len > 0 {
-        req = req.set("Range", &format!("bytes={}-{}", start, end));
-    } else if let Some(ref r) = range_header {
-        req = req.set("Range", r);
-    }
+    // librqbit's streaming server only parses open-ended `bytes={start}-` headers
+    req = req.set("Range", &format!("bytes={}-", start));
 
     let upstream_resp = match req.call() {
         Ok(r) => r,
@@ -283,14 +311,19 @@ fn handle_client(mut client: TcpStream) -> Result<(), String> {
     }
     let _ = client.flush();
 
-    let mut reader = upstream_resp.into_reader();
+    let mut reader = if content_len > 0 {
+        upstream_resp.into_reader().take(content_len)
+    } else {
+        upstream_resp.into_reader().take(u64::MAX)
+    };
     let mut buf = [0u8; 32768];
     loop {
+        if STREAM_GEN_ID.load(Ordering::Relaxed) != my_gen {
+            break;
+        }
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(read_n) => {
-                // Si Media Foundation cierra el socket inicial tras leer los primeros 64KB
-                // para saltar al átomo 'moov' del final, salimos limpiamente sin error.
                 if client.write_all(&buf[..read_n]).is_err() {
                     break;
                 }
@@ -352,23 +385,48 @@ struct MkvTrackInfo {
 
 static CACHED_MKV_INFO: Mutex<Option<HashMap<(usize, usize), MkvTrackInfo>>> = Mutex::new(None);
 
+fn sync_to_next_cluster<R: Read>(reader: &mut R, my_gen: u64) -> bool {
+    let mut ring = [0u8; 4];
+    if reader.read_exact(&mut ring).is_err() {
+        return false;
+    }
+    while ring != [0x1F, 0x43, 0xB6, 0x75] {
+        if STREAM_GEN_ID.load(Ordering::Relaxed) != my_gen {
+            return false;
+        }
+        let mut b = [0u8; 1];
+        if reader.read_exact(&mut b).is_err() {
+            return false;
+        }
+        ring[0] = ring[1];
+        ring[1] = ring[2];
+        ring[2] = ring[3];
+        ring[3] = b[0];
+    }
+    let _ = read_vint_size(reader);
+    true
+}
+
 fn serve_mkv_as_fmp4(
     client: &mut TcpStream,
     method: &str,
     upstream_url: &str,
     start_ms: u64,
+    start_pct: f64,
     torrent_id: usize,
     file_idx: usize,
     file_len: u64,
+    my_gen: u64,
 ) -> Result<(), String> {
     let hdr = "HTTP/1.1 200 OK\r\n\
                Content-Type: video/mp4\r\n\
                Accept-Ranges: none\r\n\
                Connection: close\r\n\r\n";
-    if client.write_all(hdr.as_bytes()).is_err() || method.eq_ignore_ascii_case("HEAD") {
+    if method.eq_ignore_ascii_case("HEAD") {
+        let _ = client.write_all(hdr.as_bytes());
+        let _ = client.flush();
         return Ok(());
     }
-    let _ = client.flush();
 
     // Check if we have cached track info from previous connection
     let cached_info = {
@@ -385,20 +443,52 @@ fn serve_mkv_as_fmp4(
         avcc_box_payload: Vec::new(),
     });
 
+    if mkv_info.duration_ms > 0 {
+        crate::player::set_known_duration_ms(mkv_info.duration_ms);
+    }
+
     let mut init_sent = false;
     let mut seq_number: u32 = 1;
     let mut current_cluster_tc: u64 = 0;
     let mut base_dts_ms: Option<u64> = None;
+    let mut timecode_scale_ns: u64 = 1_000_000;
+    let mut current_track_num: u64 = 0;
 
     // Fast-seek jumping: if seeking and duration/file length are known, request byte offset
+    let ratio = if start_pct > 0.0 {
+        start_pct
+    } else if mkv_info.duration_ms > 0 && start_ms > 0 {
+        (start_ms as f64 / mkv_info.duration_ms as f64).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+
     let mut seek_byte: u64 = 0;
-    if start_ms > 0 && mkv_info.duration_ms > 0 && file_len > 0 {
-        let approx_byte = ((file_len as f64) * (start_ms as f64 / mkv_info.duration_ms as f64)) as u64;
-        seek_byte = approx_byte.saturating_sub(1_048_576); // Back up 1MB to hit previous keyframe/cluster
+    if ratio > 0.0 && file_len > 0 {
+        let approx_byte = ((file_len as f64) * ratio) as u64;
+        seek_byte = approx_byte.saturating_sub(262_144); // Back up 256KB to hit previous keyframe/cluster
         log_torrent(&format!(
-            "[REMUX FAST-SEEK] Jumping to approx byte {} for target {} ms (Duration: {} ms)",
-            seek_byte, start_ms, mkv_info.duration_ms
+            "[REMUX FAST-SEEK] Jumping to approx byte {} for ratio {:.4} (target: {} ms, Duration: {} ms)",
+            seek_byte, ratio, start_ms, mkv_info.duration_ms
         ));
+    }
+
+    // If we have cached avcC headers, send HTTP 200 OK + fMP4 init segment (ftyp + moov)
+    // immediately to unblock Media Foundation initialization on the UI thread without
+    // waiting for BitTorrent download pieces at seek_byte!
+    if !mkv_info.avcc_box_payload.is_empty() {
+        if client.write_all(hdr.as_bytes()).is_ok() {
+            let init_seg = build_fmp4_init_segment(&mkv_info);
+            if client.write_all(&init_seg).is_ok() {
+                let _ = client.flush();
+                init_sent = true;
+                log_torrent("[REMUX FAST-SEEK] HTTP 200 OK + cached init segment (ftyp + moov) flushed to MF.");
+            }
+        }
+    }
+
+    if STREAM_GEN_ID.load(Ordering::Relaxed) != my_gen {
+        return Ok(());
     }
 
     let agent = ureq::AgentBuilder::new()
@@ -415,38 +505,37 @@ fn serve_mkv_as_fmp4(
         .call()
         .map_err(|e| format!("Error abriendo MKV en librqbit: {}", e))?;
 
+    if STREAM_GEN_ID.load(Ordering::Relaxed) != my_gen {
+        return Ok(());
+    }
+
     // 256 KB buffered reader to eliminate thousands of small socket reads
     let mut reader = std::io::BufReader::with_capacity(256 * 1024, resp.into_reader());
 
-    // If fast-seeking, immediately send init segment using cached config
-    if seek_byte > 0 && !mkv_info.avcc_box_payload.is_empty() {
-        let init_seg = build_fmp4_init_segment(&mkv_info);
-        if client.write_all(&init_seg).is_ok() {
-            let _ = client.flush();
-            init_sent = true;
-            log_torrent("[REMUX FAST-SEEK] Cached init segment sent immediately.");
+    // If fast-seeking, synchronize stream to the next Matroska cluster boundary
+    if seek_byte > 0 {
+        if !sync_to_next_cluster(&mut reader, my_gen) {
+            return Ok(());
         }
-
-        // Align stream to the next Matroska cluster sync marker: 0x1F, 0x43, 0xB6, 0x75
-        let mut ring = [0u8; 4];
-        if reader.read_exact(&mut ring).is_ok() {
-            while ring != [0x1F, 0x43, 0xB6, 0x75] {
-                let mut b = [0u8; 1];
-                if reader.read_exact(&mut b).is_err() { break; }
-                ring[0] = ring[1];
-                ring[1] = ring[2];
-                ring[2] = ring[3];
-                ring[3] = b[0];
-            }
-            if ring == [0x1F, 0x43, 0xB6, 0x75] {
-                log_torrent("[REMUX FAST-SEEK] Cluster boundary synchronized!");
-                let _cluster_size = read_vint_size(&mut reader);
-            }
-        }
+        log_torrent("[REMUX FAST-SEEK] Cluster boundary synchronized!");
     }
 
+    // Reusable buffer capped at 4MB to avoid heap allocations per video frame
+    let mut block_buf: Vec<u8> = Vec::with_capacity(256 * 1024);
+
     // Parse Matroska EBML stream
-    while let Some((elem_id, elem_size)) = read_ebml_element_header(&mut reader) {
+    while STREAM_GEN_ID.load(Ordering::Relaxed) == my_gen {
+        let (elem_id, elem_size) = match read_ebml_element_header(&mut reader) {
+            Some(pair) => pair,
+            None => {
+                // Desincronización o fin de datos: intentamos buscar el siguiente cluster
+                if !sync_to_next_cluster(&mut reader, my_gen) {
+                    break;
+                }
+                continue;
+            }
+        };
+
         match elem_id {
             // Contenedores Master de Matroska: entramos adentro sin saltar su contenido
             0x18538067 // Segment
@@ -454,34 +543,62 @@ fn serve_mkv_as_fmp4(
             | 0x1654AE6B // Tracks
             | 0xAE       // TrackEntry
             | 0xE0       // Video
+            | 0xA0       // BlockGroup
             | 0x1F43B675 // Cluster
             => continue,
 
             // TimecodeScale (0x2AD7B1)
             0x2AD7B1 => {
-                let _ = read_uint(&mut reader, elem_size as usize);
+                if let Some(scale) = read_uint(&mut reader, elem_size as usize) {
+                    if scale > 0 {
+                        timecode_scale_ns = scale;
+                    }
+                }
             }
             // Duration (0x4489)
             0x4489 => {
-                if elem_size == 4 {
+                let raw_dur: f64 = if elem_size == 4 {
                     let mut b = [0u8; 4];
                     if reader.read_exact(&mut b).is_ok() {
-                        let dur = f32::from_be_bytes(b);
-                        mkv_info.duration_ms = dur as u64;
+                        f32::from_be_bytes(b) as f64
+                    } else {
+                        0.0
                     }
                 } else if elem_size == 8 {
                     let mut b = [0u8; 8];
                     if reader.read_exact(&mut b).is_ok() {
-                        let dur = f64::from_be_bytes(b);
-                        mkv_info.duration_ms = dur as u64;
+                        f64::from_be_bytes(b)
+                    } else {
+                        0.0
                     }
                 } else {
                     skip_bytes(&mut reader, elem_size);
+                    0.0
+                };
+                if raw_dur > 0.0 {
+                    let dur_ms = (raw_dur * (timecode_scale_ns as f64) / 1_000_000.0) as u64;
+                    mkv_info.duration_ms = dur_ms;
+                    crate::player::set_known_duration_ms(dur_ms);
+                    let mut guard = CACHED_MKV_INFO.lock().unwrap();
+                    let map = guard.get_or_insert_with(HashMap::new);
+                    map.insert((torrent_id, file_idx), mkv_info.clone());
+                    log_torrent(&format!("[REMUX] MKV duration detected: {} ms ({:.1} min)", dur_ms, dur_ms as f64 / 60000.0));
                 }
             }
             // TrackNumber (0xD7)
             0xD7 => {
-                let _ = read_uint(&mut reader, elem_size as usize);
+                if let Some(num) = read_uint(&mut reader, elem_size as usize) {
+                    current_track_num = num;
+                }
+            }
+            // TrackType (0x83): 1 = Video, 2 = Audio, 17 = Subtitle
+            0x83 => {
+                if let Some(ttype) = read_uint(&mut reader, elem_size as usize) {
+                    if ttype == 1 {
+                        mkv_info.video_track_num = current_track_num;
+                        log_torrent(&format!("[REMUX] Track #{} marked as primary Video Track", current_track_num));
+                    }
+                }
             }
             // PixelWidth (0xB0)
             0xB0 => {
@@ -533,6 +650,9 @@ fn serve_mkv_as_fmp4(
                         log_err("[REMUX] El MKV no contiene video H.264 (avcC) compatible.");
                         return Err("MKV sin pista H.264 avcC".to_string());
                     }
+                    if client.write_all(hdr.as_bytes()).is_err() {
+                        return Ok(());
+                    }
                     let init_seg = build_fmp4_init_segment(&mkv_info);
                     if client.write_all(&init_seg).is_err() {
                         return Ok(());
@@ -542,40 +662,45 @@ fn serve_mkv_as_fmp4(
                     log_torrent("[REMUX] Segmento inicial fMP4 (ftyp + moov) enviado a Media Foundation.");
                 }
 
-                if elem_size < 4 || elem_size > 16 * 1024 * 1024 {
-                    skip_bytes(&mut reader, elem_size);
+                if elem_size < 4 || elem_size > 4 * 1024 * 1024 {
+                    // Si el elemento es sospechoso o corrupto, resincronizamos con el siguiente cluster
+                    if !sync_to_next_cluster(&mut reader, my_gen) {
+                        break;
+                    }
                     continue;
                 }
 
-                let mut block = vec![0u8; elem_size as usize];
-                if reader.read_exact(&mut block).is_err() {
+                block_buf.resize(elem_size as usize, 0);
+                if reader.read_exact(&mut block_buf).is_err() {
                     break;
                 }
 
-                let (track_num, vlen) = parse_ebml_vint(&block);
-                if vlen == 0 || block.len() < vlen + 3 {
+                let (track_num, vlen) = parse_ebml_vint(&block_buf);
+                if vlen == 0 || block_buf.len() < vlen + 3 {
                     continue;
                 }
 
-                // Solo empaquetamos la pista de video H.264 (generalmente pista 1)
+                // Solo empaquetamos la pista de video H.264
                 if track_num == mkv_info.video_track_num {
-                    let rel_tc = i16::from_be_bytes([block[vlen], block[vlen + 1]]);
-                    let flags = block[vlen + 2];
+                    let rel_tc = i16::from_be_bytes([block_buf[vlen], block_buf[vlen + 1]]);
+                    let flags = block_buf[vlen + 2];
                     let is_keyframe = (flags & 0x80) != 0;
                     let lacing = (flags >> 1) & 0x03;
 
                     // Si no usa lacing complejo, enviamos el frame H.264 como fragmento moof+mdat
                     if lacing == 0 {
-                        let nal_payload = &block[vlen + 3..];
+                        let nal_payload = &block_buf[vlen + 3..];
                         let dts_ms = (current_cluster_tc as i64 + rel_tc as i64).max(0) as u64;
 
-                        // Skip until target start_ms
-                        if start_ms > 0 && dts_ms < start_ms {
-                            continue;
-                        }
-
                         if base_dts_ms.is_none() {
-                            base_dts_ms = Some(dts_ms);
+                            if is_keyframe || seek_byte == 0 {
+                                base_dts_ms = Some(dts_ms);
+                                crate::player::set_seek_base_offset_ms(dts_ms);
+                                log_torrent(&format!("[REMUX] Stream synchronized on keyframe at {} ms (seek base offset set)", dts_ms));
+                            } else {
+                                // Esperamos al primer keyframe para evitar artefactos de decodificación
+                                continue;
+                            }
                         }
 
                         let rebased_dts = dts_ms.saturating_sub(base_dts_ms.unwrap_or(0));
@@ -595,7 +720,13 @@ fn serve_mkv_as_fmp4(
                 }
             }
             _ => {
-                skip_bytes(&mut reader, elem_size);
+                if elem_size > 4 * 1024 * 1024 {
+                    if !sync_to_next_cluster(&mut reader, my_gen) {
+                        break;
+                    }
+                } else {
+                    skip_bytes(&mut reader, elem_size);
+                }
             }
         }
     }

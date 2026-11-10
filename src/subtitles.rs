@@ -440,19 +440,41 @@ fn parse_srt_timestamp(ts_str: &str) -> Option<u64> {
     Some(hours * 3_600_000 + minutes * 60_000 + seconds * 1_000 + millis)
 }
 
+/// Strips `<...>` markup, ASS-style `{...}` override tags (e.g. `{\an8}`) that often leak into SRT
+/// files, and decodes the common HTML entities.
 fn clean_sub_text(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
-    let mut inside_tag = false;
+    let mut inside_angle = false;
+    let mut inside_brace = false;
     for c in raw.chars() {
-        if c == '<' {
-            inside_tag = true;
-        } else if c == '>' {
-            inside_tag = false;
-        } else if !inside_tag {
-            out.push(c);
+        match c {
+            '<' if !inside_brace => inside_angle = true,
+            '>' if inside_angle => inside_angle = false,
+            '{' if !inside_angle => inside_brace = true,
+            '}' if inside_brace => inside_brace = false,
+            _ if !inside_angle && !inside_brace => out.push(c),
+            _ => {}
         }
     }
+    let out = out
+        .replace(r"\N", "\n")
+        .replace("&nbsp;", " ")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&");
     out.trim().to_string()
+}
+
+#[cfg(test)]
+mod clean_sub_text_tests {
+    use super::clean_sub_text;
+
+    #[test]
+    fn strips_ass_override_tags() {
+        assert_eq!(clean_sub_text(r"{\an8}I try not to..."), "I try not to...");
+        assert_eq!(clean_sub_text(r"{\i1}Hello{\i0} <b>world</b>"), "Hello world");
+        assert_eq!(clean_sub_text("a &amp; b&nbsp;c"), "a & b c");
+    }
 }
 
 pub fn parse_srt(content: &str) -> Result<Vec<SubtitleEntry>, String> {

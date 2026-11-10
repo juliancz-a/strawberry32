@@ -251,6 +251,52 @@ pub fn get_slint_hwnd(window: &slint::Window) -> HWND {
     std::ptr::null_mut()
 }
 
+/// Re-reads the main window's client rect and resizes the video HWND, the controls overlay and the
+/// subtitle layer to match. Single source of truth for player layout.
+pub fn sync_player_layout(window: &slint::Window) {
+    let slint_hwnd = get_slint_hwnd(window);
+    let v_hwnd = *VIDEO_HWND.lock().unwrap() as HWND;
+    if slint_hwnd.is_null() || v_hwnd.is_null() {
+        return;
+    }
+    unsafe {
+        let mut rc: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
+        windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect(slint_hwnd, &mut rc);
+        let w = (rc.right - rc.left).max(100);
+        let h = (rc.bottom - rc.top).max(100);
+        *LAST_RECT.lock().unwrap() = (0, 0, w, h);
+        let ov_hwnd = crate::ui::overlay::get_overlay_hwnd();
+        crate::ui::overlay::position_overlay(slint_hwnd, 0, 0, w, h);
+        windows_sys::Win32::UI::WindowsAndMessaging::SetWindowPos(
+            v_hwnd,
+            if !ov_hwnd.is_null() { ov_hwnd } else { windows_sys::Win32::UI::WindowsAndMessaging::HWND_TOP },
+            0,
+            0,
+            w,
+            h,
+            windows_sys::Win32::UI::WindowsAndMessaging::SWP_SHOWWINDOW
+                | windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOACTIVATE,
+        );
+        player::update_video_position(0, 0, w, h);
+    }
+}
+
+/// winit applies `set_fullscreen()` asynchronously, so the client rect read right after the call is
+/// stale. Re-sync the player layout shortly afterwards, once the new size has been applied.
+pub fn schedule_layout_resync(app_weak: slint::Weak<MainWindow>) {
+    for delay_ms in [80u64, 300, 700] {
+        let weak = app_weak.clone();
+        slint::Timer::single_shot(std::time::Duration::from_millis(delay_ms), move || {
+            if let Some(ui) = weak.upgrade() {
+                if ui.get_current_view() == 2 {
+                    sync_player_layout(&ui.window());
+                    crate::ui::overlay::update_subtitle_window();
+                }
+            }
+        });
+    }
+}
+
 pub fn ensure_video_hwnd(window: &slint::Window) -> HWND {
     use windows_sys::Win32::UI::WindowsAndMessaging::{DestroyWindow, GetParent, IsWindow};
 
@@ -1387,6 +1433,7 @@ pub fn run_app() -> Result<(), String> {
             // First: hide and cleanup any existing playback and destroy old video HWND
             crate::ui::overlay::hide_overlay();
             player::stop_embedded_player();
+            engine::stop_active_stream();
             destroy_video_hwnd();
 
             // Set loading state in engine
@@ -1626,6 +1673,7 @@ pub fn run_app() -> Result<(), String> {
                                                 overlay.on_close_clicked(move || {
                                                     crate::ui::overlay::hide_overlay();
                                                     engine::cancel_stream_loading();
+                                                    engine::stop_active_stream();
                                                     player::stop_embedded_player();
                                                     destroy_video_hwnd();
 
@@ -1649,9 +1697,11 @@ pub fn run_app() -> Result<(), String> {
                                                 overlay.on_toggle_fullscreen_clicked(move || {
                                                     crate::ui::overlay::notify_user_activity();
                                                     if let Some(ui) = app_weak_fs.upgrade() {
+                                                        *LAST_RECT.lock().unwrap() = (0, 0, 0, 0);
                                                         let next_fs = !ui.window().is_fullscreen();
                                                         ui.window().set_fullscreen(next_fs);
                                                         ui.set_is_fullscreen(next_fs);
+                                                         schedule_layout_resync(app_weak_fs.clone());
                                                         let slint_h = get_slint_hwnd(&ui.window());
                                                         let v_hwnd = *VIDEO_HWND.lock().unwrap() as HWND;
                                                         if !slint_h.is_null() && !v_hwnd.is_null() {
@@ -1698,6 +1748,7 @@ pub fn run_app() -> Result<(), String> {
                                                     if let Some(ov) = overlay_weak_sz.upgrade() {
                                                         ov.set_sub_size(sz);
                                                     }
+                                                    crate::ui::overlay::set_overlay_sub_size(sz);
                                                 });
 
                                                 let overlay_weak_sub_tog = overlay.as_weak();
@@ -1705,6 +1756,15 @@ pub fn run_app() -> Result<(), String> {
                                                     crate::ui::overlay::notify_user_activity();
                                                     if let Some(ov) = overlay_weak_sub_tog.upgrade() {
                                                         ov.set_subtitles_enabled(enabled);
+                                                        if !enabled {
+                                                            crate::ui::overlay::update_overlay_state(
+                                                                &ov.get_time_str(),
+                                                                ov.get_progress(),
+                                                                ov.get_is_paused(),
+                                                                "",
+                                                                ov.get_is_fullscreen(),
+                                                            );
+                                                        }
                                                     }
                                                 });
 
@@ -1772,10 +1832,17 @@ pub fn run_app() -> Result<(), String> {
                                                 let overlay_weak_mute = overlay.as_weak();
                                                 overlay.on_toggle_mute_clicked(move || {
                                                     crate::ui::overlay::notify_user_activity();
-                                                    let cur = player::get_muted();
-                                                    let _ = player::set_muted(!cur);
                                                     if let Some(ov) = overlay_weak_mute.upgrade() {
-                                                        ov.set_is_muted(!cur);
+                                                        let new_muted = !ov.get_is_muted();
+                                                        ov.set_is_muted(new_muted);
+                                                        let vol_pct = ov.get_volume_percent();
+                                                        if new_muted {
+                                                            let _ = player::set_volume(0.0);
+                                                            let _ = player::set_muted(true);
+                                                        } else {
+                                                            let _ = player::set_volume((vol_pct as f32 / 100.0).clamp(0.0, 1.0));
+                                                            let _ = player::set_muted(false);
+                                                        }
                                                     }
                                                 });
 
@@ -1840,6 +1907,7 @@ pub fn run_app() -> Result<(), String> {
     app.on_player_back(move || {
         crate::ui::overlay::hide_overlay();
         engine::cancel_stream_loading();
+        engine::stop_active_stream();
         player::stop_embedded_player();
         destroy_video_hwnd();
         if let Some(ui) = app_weak.upgrade() {
@@ -1879,9 +1947,11 @@ pub fn run_app() -> Result<(), String> {
     let toggle_fullscreen = Arc::new(move || {
         if let Some(ui) = app_weak_fs.upgrade() {
             crate::ui::overlay::notify_user_activity();
+            *LAST_RECT.lock().unwrap() = (0, 0, 0, 0);
             let next_fs = !ui.window().is_fullscreen();
             ui.window().set_fullscreen(next_fs);
             ui.set_is_fullscreen(next_fs);
+            schedule_layout_resync(app_weak_fs.clone());
             let slint_hwnd = get_slint_hwnd(&ui.window());
             let v_hwnd = *VIDEO_HWND.lock().unwrap() as HWND;
             if !slint_hwnd.is_null() && !v_hwnd.is_null() {
@@ -1923,8 +1993,10 @@ pub fn run_app() -> Result<(), String> {
         if let Some(ui) = app_weak_esc.upgrade() {
             crate::ui::overlay::notify_user_activity();
             if ui.window().is_fullscreen() {
+                *LAST_RECT.lock().unwrap() = (0, 0, 0, 0);
                 ui.window().set_fullscreen(false);
                 ui.set_is_fullscreen(false);
+                schedule_layout_resync(app_weak_esc.clone());
                 let slint_hwnd = get_slint_hwnd(&ui.window());
                 let v_hwnd = *VIDEO_HWND.lock().unwrap() as HWND;
                 if !slint_hwnd.is_null() && !v_hwnd.is_null() {
@@ -1951,6 +2023,7 @@ pub fn run_app() -> Result<(), String> {
             } else if ui.get_current_view() == 2 {
                 crate::ui::overlay::hide_overlay();
                 engine::cancel_stream_loading();
+                engine::stop_active_stream();
                 player::stop_embedded_player();
                 destroy_video_hwnd();
                 let prev = PAGE_STACK.lock().unwrap().pop().unwrap_or(0);

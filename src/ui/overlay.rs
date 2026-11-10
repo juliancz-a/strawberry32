@@ -7,25 +7,43 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::Graphics::Gdi::{
-    CombineRgn, CreateRectRgn, DeleteObject, InvalidateRect, SetWindowRgn, UpdateWindow, HGDIOBJ, RGN_OR,
+    CombineRgn, CreateRectRgn, DeleteObject, InvalidateRect, SetWindowRgn, UpdateWindow, HGDIOBJ,
+    RGN_OR,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetWindowLongW, SetParent, SetWindowLongW, SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE,
-    HWND_TOP, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNA,
-    WS_CAPTION, WS_CHILD, WS_CLIPSIBLINGS, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
+    HWND_TOP, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNA, WS_CAPTION,
+    WS_CHILD, WS_CLIPSIBLINGS, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
 };
 
 // Re-export generated component
 slint::include_modules!();
 
 static OVERLAY_HWND: AtomicIsize = AtomicIsize::new(0);
+static MAIN_HWND: AtomicIsize = AtomicIsize::new(0);
 static OVERLAY_WIDTH: AtomicI32 = AtomicI32::new(0);
 static OVERLAY_HEIGHT: AtomicI32 = AtomicI32::new(0);
 static CONTROLS_VISIBLE: AtomicBool = AtomicBool::new(true);
 static HAS_SUBTITLE: AtomicBool = AtomicBool::new(false);
 static ACTIVE_PANEL: AtomicI32 = AtomicI32::new(0);
 static LAST_ACTIVITY: Mutex<Option<Instant>> = Mutex::new(None);
+static CURRENT_SUB_TEXT: Mutex<String> = Mutex::new(String::new());
+static SUB_SIZE_MODE: AtomicI32 = AtomicI32::new(1); // 0=Small, 1=Normal, 2=Large (scaled with video height)
+
+
+pub fn set_overlay_sub_size(mode: i32) {
+    SUB_SIZE_MODE.store(mode, Ordering::SeqCst);
+    update_subtitle_window();
+}
+
+/// Updates the subtitle layer (per-pixel-alpha layered popup, see `subtitle_layer`).
+/// Cheap when nothing changed, so it is safe to call from every UI tick.
+pub fn update_subtitle_window() {
+    let owner = MAIN_HWND.load(Ordering::SeqCst) as HWND;
+    let text = CURRENT_SUB_TEXT.lock().unwrap().clone();
+    crate::ui::subtitle_layer::tick(owner, &text, SUB_SIZE_MODE.load(Ordering::SeqCst));
+}
 
 thread_local! {
     static OVERLAY_INSTANCE: RefCell<Option<PlayerOverlay>> = const { RefCell::new(None) };
@@ -40,12 +58,11 @@ fn get_component_hwnd(window: &slint::Window) -> HWND {
     std::ptr::null_mut()
 }
 
-/// Updates the visible window region using SetWindowRgn instead of LWA_COLORKEY.
-/// When controls are visible, only the top bar and bottom transport bar exist as pixels.
-/// When controls are hidden and a subtitle is present, only a full-width bottom subtitle bar exists.
-/// The video area between them is completely excluded from the window, allowing
-/// video to show through without color-keying, transparency bugs, or dirty framebuffer artifacts.
-pub fn update_overlay_region(hwnd: HWND, width: i32, height: i32, controls_visible: bool, has_subtitle: bool, active_panel: i32) {
+/// Updates the visible window region for PlayerOverlay using SetWindowRgn.
+/// When controls are visible, only the top bar, bottom bar, and any side panel exist as pixels.
+/// When controls are hidden, an empty region is applied so the overlay takes 0 pixels.
+/// Subtitles are rendered independently by subtitle_layer.
+pub fn update_overlay_region(hwnd: HWND, width: i32, height: i32, controls_visible: bool, _has_subtitle: bool, active_panel: i32) {
     if hwnd.is_null() || width <= 0 || height <= 0 {
         return;
     }
@@ -65,16 +82,6 @@ pub fn update_overlay_region(hwnd: HWND, width: i32, height: i32, controls_visib
             CombineRgn(combined_rgn, combined_rgn, bottom_rgn, RGN_OR);
             DeleteObject(bottom_rgn as HGDIOBJ);
 
-            // Subtitle rect if active (width: 700px centered, height: 44px at height - 124)
-            if has_subtitle {
-                let sub_w = 700.min(width - 40);
-                let sub_x = (width - sub_w) / 2;
-                let sub_y = (height - 124).max(0);
-                let sub_rgn = CreateRectRgn(sub_x, sub_y, sub_x + sub_w, sub_y + 44);
-                CombineRgn(combined_rgn, combined_rgn, sub_rgn, RGN_OR);
-                DeleteObject(sub_rgn as HGDIOBJ);
-            }
-
             // Side panel rect if open (width - 340 .. width, 50 .. height - 74)
             if active_panel > 0 {
                 let panel_w = 340.min(width);
@@ -85,14 +92,6 @@ pub fn update_overlay_region(hwnd: HWND, width: i32, height: i32, controls_visib
                 CombineRgn(combined_rgn, combined_rgn, panel_rgn, RGN_OR);
                 DeleteObject(panel_rgn as HGDIOBJ);
             }
-        } else if has_subtitle {
-            // Subtitle rect when controls hidden: EXACT SAME POSITION AND SIZE! Zero jumping!
-            let sub_w = 700.min(width - 40);
-            let sub_x = (width - sub_w) / 2;
-            let sub_y = (height - 124).max(0);
-            let sub_rgn = CreateRectRgn(sub_x, sub_y, sub_x + sub_w, sub_y + 44);
-            CombineRgn(combined_rgn, combined_rgn, sub_rgn, RGN_OR);
-            DeleteObject(sub_rgn as HGDIOBJ);
         }
 
         // SetWindowRgn takes ownership of combined_rgn if successful
@@ -103,6 +102,11 @@ pub fn update_overlay_region(hwnd: HWND, width: i32, height: i32, controls_visib
         } else {
             InvalidateRect(hwnd, std::ptr::null(), 1);
             UpdateWindow(hwnd);
+            let main_h = MAIN_HWND.load(Ordering::SeqCst) as HWND;
+            if !main_h.is_null() {
+                InvalidateRect(main_h, std::ptr::null(), 0);
+            }
+            crate::player::refresh_video_window();
         }
     }
 }
@@ -112,6 +116,8 @@ pub fn setup_overlay_window(hwnd: HWND, main_hwnd: HWND, width: i32, height: i32
     if hwnd.is_null() {
         return;
     }
+
+    MAIN_HWND.store(main_hwnd as isize, Ordering::SeqCst);
 
     unsafe {
         // 1. Immediately hide so Windows 8.1/RT unregisters the window from the Taskbar & App Switcher
@@ -243,6 +249,7 @@ pub fn position_overlay(_main_hwnd: HWND, x_client: i32, y_client: i32, width: i
         let sub = HAS_SUBTITLE.load(Ordering::SeqCst);
         let panel = ACTIVE_PANEL.load(Ordering::SeqCst);
         update_overlay_region(hwnd, width, height, vis, sub, panel);
+        update_subtitle_window();
     }
 }
 
@@ -250,15 +257,17 @@ pub fn position_overlay(_main_hwnd: HWND, x_client: i32, y_client: i32, width: i
 pub fn update_overlay_state(time_str: &str, progress: f32, is_paused: bool, sub_text: &str, is_fs: bool) {
     let has_sub = !sub_text.trim().is_empty();
     let prev_has_sub = HAS_SUBTITLE.swap(has_sub, Ordering::SeqCst);
-    if has_sub != prev_has_sub {
-        let hwnd = OVERLAY_HWND.load(Ordering::SeqCst) as HWND;
-        let w = OVERLAY_WIDTH.load(Ordering::SeqCst);
-        let h = OVERLAY_HEIGHT.load(Ordering::SeqCst);
-        let vis = CONTROLS_VISIBLE.load(Ordering::SeqCst);
-        let panel = ACTIVE_PANEL.load(Ordering::SeqCst);
-        if !hwnd.is_null() && w > 0 && h > 0 {
-            update_overlay_region(hwnd, w, h, vis, has_sub, panel);
+    let text_changed = {
+        let mut guard = CURRENT_SUB_TEXT.lock().unwrap();
+        if *guard != sub_text {
+            *guard = sub_text.to_string();
+            true
+        } else {
+            false
         }
+    };
+    if (has_sub != prev_has_sub) || text_changed {
+        update_subtitle_window();
     }
 
     OVERLAY_INSTANCE.with(|cell| {
@@ -321,6 +330,7 @@ pub fn set_controls_visible(visible: bool) {
 
     if !hwnd.is_null() && w > 0 && h > 0 {
         update_overlay_region(hwnd, w, h, visible, sub, panel);
+        update_subtitle_window();
     }
 
     OVERLAY_INSTANCE.with(|cell| {
@@ -384,6 +394,7 @@ pub fn hide_overlay() {
             ShowWindow(hwnd, SW_HIDE);
         }
     }
+    crate::ui::subtitle_layer::hide();
 }
 
 /// Returns the overlay HWND
