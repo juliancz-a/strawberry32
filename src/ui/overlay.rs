@@ -245,6 +245,20 @@ pub fn position_overlay(_main_hwnd: HWND, x_client: i32, y_client: i32, width: i
             SWP_NOACTIVATE | SWP_SHOWWINDOW,
         );
 
+        let v_hwnd = crate::gui::get_video_hwnd();
+        if !v_hwnd.is_null() {
+            SetWindowPos(
+                v_hwnd,
+                hwnd,
+                x_client,
+                y_client,
+                width,
+                height,
+                SWP_SHOWWINDOW | SWP_NOACTIVATE,
+            );
+            crate::player::update_video_position(0, 0, width, height);
+        }
+
         let vis = CONTROLS_VISIBLE.load(Ordering::SeqCst);
         let sub = HAS_SUBTITLE.load(Ordering::SeqCst);
         let panel = ACTIVE_PANEL.load(Ordering::SeqCst);
@@ -630,6 +644,30 @@ pub fn set_overlay_seek_step(step: i32) {
         if let Ok(guard) = cell.try_borrow() {
             if let Some(ov) = guard.as_ref() {
                 ov.set_seek_step_s(step);
+            }
+        }
+    });
+}
+
+/// Updates the volume percentage on the overlay
+pub fn set_overlay_volume(pct: i32) {
+    OVERLAY_INSTANCE.with(|cell| {
+        if let Ok(guard) = cell.try_borrow() {
+            if let Some(ov) = guard.as_ref() {
+                ov.set_volume_percent(pct);
+                ov.set_is_muted(pct == 0);
+            }
+        }
+    });
+}
+
+/// Updates the mute state on the overlay
+pub fn set_overlay_muted(muted: bool, pct: i32) {
+    OVERLAY_INSTANCE.with(|cell| {
+        if let Ok(guard) = cell.try_borrow() {
+            if let Some(ov) = guard.as_ref() {
+                ov.set_is_muted(muted);
+                ov.set_volume_percent(pct);
             }
         }
     });

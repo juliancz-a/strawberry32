@@ -18,27 +18,47 @@ use std::time::Duration;
 #[derive(Clone, Debug, Default)]
 pub struct StreamStatus {
     pub is_loading: bool,
+    pub stage: u8, // 1=Peers (15%), 2=Meta (15%), 3=Container (10%), 4=Index (10%), 5=Buffering (40%), 6=Player (10%), 7=Ready
     pub title: String,
     pub message: String,
     pub peers: usize,
     pub speed_kbs: f64,
     pub progress_mb: f64,
+    pub target_mb: f64,
     pub elapsed_secs: u64,
+    pub eta_secs: u64,
     pub error: Option<String>,
     pub progress_ratio: f32,
+    pub has_hint: bool,
+    pub hint_message: String,
+    pub events: Vec<String>,
 }
 
 static STREAM_STATUS: Mutex<StreamStatus> = Mutex::new(StreamStatus {
     is_loading: false,
+    stage: 0,
     title: String::new(),
     message: String::new(),
     peers: 0,
     speed_kbs: 0.0,
     progress_mb: 0.0,
+    target_mb: 0.0,
     elapsed_secs: 0,
+    eta_secs: 0,
     error: None,
     progress_ratio: 0.0,
+    has_hint: false,
+    hint_message: String::new(),
+    events: Vec::new(),
 });
+
+pub fn record_stream_event(msg: &str) {
+    let mut guard = STREAM_STATUS.lock().unwrap();
+    guard.events.push(msg.to_string());
+    if guard.events.len() > 8 {
+        guard.events.remove(0);
+    }
+}
 
 static CURRENT_VIDEO_HASH: Mutex<Option<(String, u64)>> = Mutex::new(None);
 static BUNDLED_SUBTITLES: Mutex<Vec<crate::subtitles::BundledSubtitle>> = Mutex::new(Vec::new());
@@ -110,19 +130,36 @@ pub fn get_bundled_subtitles() -> Vec<crate::subtitles::BundledSubtitle> {
 pub fn set_stream_loading(title: &str) {
     let mut guard = STREAM_STATUS.lock().unwrap();
     guard.is_loading = true;
+    guard.stage = 1;
     guard.title = title.to_string();
-    guard.message = "Connecting to swarm & resolving metadata...".to_string();
+    guard.message = "Contacting DHT swarm & trackers...".to_string();
     guard.peers = 0;
     guard.speed_kbs = 0.0;
     guard.progress_mb = 0.0;
+    guard.target_mb = 0.0;
     guard.elapsed_secs = 0;
+    guard.eta_secs = 0;
     guard.error = None;
+    guard.progress_ratio = 0.05;
+    guard.has_hint = false;
+    guard.hint_message.clear();
+    guard.events.clear();
+    guard.events.push("Initializing streaming session...".to_string());
 }
 
 pub fn cancel_stream_loading() {
     let mut guard = STREAM_STATUS.lock().unwrap();
     guard.is_loading = false;
+    guard.stage = 0;
     guard.message = "Playback canceled".to_string();
+}
+
+pub fn finish_stream_loading() {
+    let mut guard = STREAM_STATUS.lock().unwrap();
+    guard.is_loading = false;
+    guard.stage = 7;
+    guard.progress_ratio = 1.0;
+    guard.message = "Playing".to_string();
 }
 
 #[allow(dead_code)]
@@ -422,11 +459,20 @@ async fn handle_start_stream(
                     guard.speed_kbs = down_kbs;
                     guard.progress_mb = prog_mb;
                     guard.elapsed_secs = elapsed;
-                    guard.message = if live_peers > 0 {
-                        format!("Fetching metadata: {} connected peers ({}s / 60s)", live_peers, elapsed)
+
+                    if live_peers == 0 {
+                        guard.stage = 1;
+                        guard.progress_ratio = ((elapsed as f32 / 15.0).min(1.0) * 0.15).max(0.02);
+                        guard.message = format!("Contacting swarm & trackers... ({}s / 60s)", elapsed);
+                        if elapsed >= 15 {
+                            guard.has_hint = true;
+                            guard.hint_message = "Few peers detected. Try another source if buffering stalls.".to_string();
+                        }
                     } else {
-                        format!("Contacting DHT swarm & trackers... ({}s / 60s)", elapsed)
-                    };
+                        guard.stage = 2;
+                        guard.progress_ratio = 0.15 + ((elapsed as f32 / 20.0).min(1.0) * 0.15);
+                        guard.message = format!("Fetching metadata: {} connected peers ({}s / 60s)", live_peers, elapsed);
+                    }
                 }
 
                 log_torrent(&format!(
@@ -443,8 +489,11 @@ async fn handle_start_stream(
     match init_success {
         Ok(()) => {
             log_torrent(&format!("[FAST_START] Torrent metadata resolved in {} ms", t_fast_start.elapsed().as_millis()));
+            record_stream_event("Torrent metadata resolved successfully.");
             let mut guard = STREAM_STATUS.lock().unwrap();
-            guard.message = "Metadata resolved! Buffering initial segment...".to_string();
+            guard.stage = 3;
+            guard.progress_ratio = 0.30;
+            guard.message = "Metadata resolved! Reading container headers...".to_string();
         }
         Err(e) => {
             log_err(&e);
@@ -469,7 +518,7 @@ async fn handle_start_stream(
     // Scan for bundled subtitle files (.srt, .vtt, .ass, .ssa)
     let bundled_subs_info: Vec<(usize, String, u64)> = all_files.iter().map(|(i, len, name)| (*i, name.clone(), *len)).collect();
     let found_bundled = crate::subtitles::find_bundled_subtitles(&bundled_subs_info);
-    *BUNDLED_SUBTITLES.lock().unwrap() = found_bundled;
+    *BUNDLED_SUBTITLES.lock().unwrap() = found_bundled.clone();
 
     // Determine target video file index, length and filename (with series season/episode matching)
     let (chosen_idx, file_len, file_name) = match preferred_file_idx {
@@ -496,13 +545,16 @@ async fn handle_start_stream(
         file_name
     ));
 
-    // Restrict librqbit download exclusively to the target file to avoid downloading the entire pack
+    // Restrict librqbit download exclusively to the target file and any bundled subtitles
     let mut only_files_set = std::collections::HashSet::new();
     only_files_set.insert(chosen_idx);
+    for sub in &found_bundled {
+        only_files_set.insert(sub.file_idx);
+    }
     if let Err(e) = session.update_only_files(&handle, &only_files_set).await {
         log_err(&format!("Notice: update_only_files failed: {}", e));
     } else {
-        log_torrent(&format!("Torrent pack isolation active: downloading exclusively file index {}.", chosen_idx));
+        log_torrent(&format!("Torrent pack isolation active: downloading exclusively file index {} (plus {} bundled subtitles).", chosen_idx, found_bundled.len()));
     }
 
     // Register file info with the local proxy/remuxer server
@@ -519,11 +571,15 @@ async fn handle_start_stream(
     crate::cache_cleaner::set_active_torrent_dir(Some(active_torrent_folder));
 
     // PART 2: SMART CONTAINER METADATA INSPECTION & TARGETED PRE-BUFFERING
-    // NOTE: librqbit's internal streaming HTTP server only supports open-ended range headers
-    // of the format `bytes={offset}-` (requires trailing hyphen via s.strip_suffix('-')).
-    // We MUST use `bytes={offset}-` and constrain reader consumption with `.take(limit)`
-    // so std::io::copy never attempts to read past the target chunk into an unbounded Vec.
-    let head_chunk_size = 131_072usize.min(file_len as usize); // 128 KB
+    {
+        record_stream_event(&format!("Reading container headers: {}", file_name));
+        let mut guard = STREAM_STATUS.lock().unwrap();
+        guard.stage = 3;
+        guard.progress_ratio = 0.35;
+        guard.message = format!("Reading container: {} ({:.1} MB)", file_name, file_len as f64 / 1_048_576.0);
+    }
+
+    let head_chunk_size = 262_144usize.min(file_len as usize); // 256 KB
     let url_head = stream_url.clone();
     let head_range_hdr = "bytes=0-".to_string();
     let head_handle = tokio::task::spawn_blocking(move || -> Vec<u8> {
@@ -584,8 +640,16 @@ async fn handle_start_stream(
     ).await;
 
     // Targeted atom pre-fetching:
+    {
+        let mut guard = STREAM_STATUS.lock().unwrap();
+        guard.stage = 4;
+        guard.progress_ratio = 0.45;
+        guard.message = "Fetching container index (moov/Cues)...".to_string();
+    }
+
     if let Some((moov_offset, moov_size)) = meta.moov_range {
         if moov_offset > (head_chunk_size as u64) {
+            record_stream_event(&format!("Pre-fetching tail MP4 moov atom ({} KB)", moov_size / 1024));
             log_torrent(&format!(
                 "Pre-fetching exact tail 'moov' atom at {} ({} KB)...",
                 moov_offset, moov_size / 1024
@@ -593,7 +657,10 @@ async fn handle_start_stream(
             let url_moov = stream_url.clone();
             let moov_range_hdr = format!("bytes={}-", moov_offset);
             let _ = tokio::task::spawn_blocking(move || {
-                let client = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(10)).build();
+                let client = ureq::AgentBuilder::new()
+                    .timeout_connect(Duration::from_secs(10))
+                    .timeout_read(Duration::from_secs(30))
+                    .build();
                 if let Ok(resp) = client.get(&url_moov).set("Range", &moov_range_hdr).call() {
                     let mut reader = Read::take(resp.into_reader(), moov_size);
                     let _ = std::io::copy(&mut reader, &mut std::io::sink());
@@ -601,12 +668,16 @@ async fn handle_start_stream(
             }).await;
         }
     } else if let Some(cues_offset) = meta.cues_offset {
+        record_stream_event("Pre-fetching MKV Cues index...");
         log_torrent(&format!("Pre-fetching MKV Cues index at {} in background...", cues_offset));
         let url_cues = stream_url.clone();
         let cues_range_hdr = format!("bytes={}-", cues_offset);
         tokio::spawn(async move {
             let _ = tokio::task::spawn_blocking(move || {
-                let client = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(10)).build();
+                let client = ureq::AgentBuilder::new()
+                    .timeout_connect(Duration::from_secs(10))
+                    .timeout_read(Duration::from_secs(30))
+                    .build();
                 if let Ok(resp) = client.get(&url_cues).set("Range", &cues_range_hdr).call() {
                     let mut reader = Read::take(resp.into_reader(), 500_000);
                     let _ = std::io::copy(&mut reader, &mut std::io::sink());
@@ -614,15 +685,19 @@ async fn handle_start_stream(
             }).await;
         });
     } else {
-        // Fallback for MP4 files where moov was not in the first 128KB: prefetch last 3 MB
+        // Fallback for MP4 files where moov was not in the first 256KB: prefetch last 3 MB
         let is_mp4 = file_name.to_lowercase().ends_with(".mp4") || file_name.to_lowercase().ends_with(".m4v");
         if is_mp4 && file_len > 3_000_000 {
             let tail_moov_start = file_len - 3_000_000;
             let url_tail_moov = stream_url.clone();
             let tail_moov_hdr = format!("bytes={}-", tail_moov_start);
+            record_stream_event("Pre-fetching MP4 tail index (3 MB)...");
             log_torrent(&format!("Pre-fetching MP4 tail index at byte {} (3 MB) for Media Foundation...", tail_moov_start));
             let _ = tokio::task::spawn_blocking(move || {
-                let client = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(10)).build();
+                let client = ureq::AgentBuilder::new()
+                    .timeout_connect(Duration::from_secs(10))
+                    .timeout_read(Duration::from_secs(30))
+                    .build();
                 if let Ok(resp) = client.get(&url_tail_moov).set("Range", &tail_moov_hdr).call() {
                     let mut reader = Read::take(resp.into_reader(), 3_000_000);
                     let _ = std::io::copy(&mut reader, &mut std::io::sink());
@@ -631,13 +706,38 @@ async fn handle_start_stream(
         }
     }
 
-    // Buffer initial playback segment (1.5 MB for 720p/MKV, 2.5 MB for 1080p)
+    // Buffer initial playback segment (ensuring full moov atom and initial frames are cached)
     let is_1080p = file_name.to_lowercase().contains("1080p") || file_name.to_lowercase().contains("fhd");
-    let init_play_size = if is_1080p {
-        (2_621_440usize).min(file_len as usize) // 2.5 MB for 1080p
+    let is_mp4 = file_name.to_lowercase().ends_with(".mp4") || file_name.to_lowercase().ends_with(".m4v");
+
+    let moov_head_needed = if is_mp4 {
+        if let Some((offset, size)) = meta.moov_range {
+            if offset < 20_000_000 {
+                // moov is in the first 20 MB (fast-start MP4) -> ensure moov + 1MB of video payload is downloaded
+                offset + size + 1_048_576
+            } else {
+                0
+            }
+        } else {
+            0
+        }
     } else {
-        (1_572_864usize).min(file_len as usize) // 1.5 MB for 720p / MKV
+        0
     };
+
+    let base_min = if is_1080p { 2_621_440u64 } else { 1_572_864u64 };
+    let init_play_size = (moov_head_needed.max(base_min) as usize).min(file_len as usize);
+    let target_mb = init_play_size as f64 / 1_048_576.0;
+
+    {
+        record_stream_event(&format!("Buffering initial segment ({:.1} MB)...", target_mb));
+        let mut guard = STREAM_STATUS.lock().unwrap();
+        guard.stage = 5;
+        guard.progress_ratio = 0.50;
+        guard.target_mb = target_mb;
+        guard.message = format!("Buffering initial segment (0.0/{:.1} MB)...", target_mb);
+    }
+
     let url_play = stream_url.clone();
     let play_range_hdr = "bytes=0-".to_string();
     let t_buf_start = std::time::Instant::now();
@@ -652,22 +752,38 @@ async fn handle_start_stream(
                     Ok(0) => break,
                     Ok(n) => {
                         total_read += n;
-                        let ratio = (total_read as f32 / init_play_size as f32).clamp(0.0, 1.0);
+                        let frac = (total_read as f32 / init_play_size as f32).clamp(0.0, 1.0);
+                        let weighted_ratio = 0.50 + frac * 0.40;
                         let elapsed = t_buf_start.elapsed().as_secs_f64();
                         let speed = if elapsed > 0.05 {
                             (total_read as f64 / 1024.0) / elapsed
                         } else {
                             0.0
                         };
+                        let remaining_bytes = init_play_size.saturating_sub(total_read);
+                        let eta_secs = if speed > 10.0 {
+                            (remaining_bytes as f64 / (speed * 1024.0)).ceil() as u64
+                        } else {
+                            0
+                        };
+
                         let mut status = STREAM_STATUS.lock().unwrap();
-                        status.progress_mb = total_read as f64 / (1024.0 * 1024.0);
+                        status.progress_mb = total_read as f64 / 1_048_576.0;
+                        status.target_mb = target_mb;
                         status.speed_kbs = speed;
-                        status.progress_ratio = ratio;
-                        status.message = format!(
-                            "Pre-buffering stream... ({:.1}/{:.1} MB)",
-                            total_read as f64 / 1_048_576.0,
-                            init_play_size as f64 / 1_048_576.0
-                        );
+                        status.eta_secs = eta_secs;
+                        status.progress_ratio = weighted_ratio;
+                        status.message = if eta_secs > 0 {
+                            format!(
+                                "Buffering segment: {:.1}/{:.1} MB (ETA ~{}s @ {:.0} KB/s)",
+                                status.progress_mb, target_mb, eta_secs, speed
+                            )
+                        } else {
+                            format!(
+                                "Buffering segment: {:.1}/{:.1} MB (@ {:.0} KB/s)",
+                                status.progress_mb, target_mb, speed
+                            )
+                        };
                     }
                     Err(_) => break,
                 }
@@ -682,12 +798,13 @@ async fn handle_start_stream(
         t_fast_start.elapsed().as_millis()
     ));
 
-    // Mark stream status ready
+    // Mark stage 6: Starting player (covers silent decoder startup gap until first frame)
     {
+        record_stream_event("Pre-buffering complete. Opening Media Foundation decoder...");
         let mut guard = STREAM_STATUS.lock().unwrap();
-        guard.is_loading = false;
-        guard.message = "Ready".to_string();
-        guard.progress_mb = 4.0;
+        guard.stage = 6;
+        guard.progress_ratio = 0.95;
+        guard.message = "Opening Media Foundation decoder & DXVA2 hardware surface...".to_string();
     }
 
     // Return the local remux/proxy URL always ending in .mp4 for Windows RT Media Foundation MPEG4ByteStreamHandler

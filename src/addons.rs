@@ -1,4 +1,4 @@
-use crate::logger::{log_err, log_net, log_ureq_err};
+use crate::logger::{log_err, log_info, log_net, log_ureq_err};
 use crate::state::{self, MetaDetail};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -38,21 +38,37 @@ pub struct MetaItem {
     pub genres: Vec<String>,
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug)]
-struct TorrentioResponse {
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
+pub struct StreamBehaviorHints {
     #[serde(default)]
-    pub streams: Vec<RawTorrentioStream>,
+    pub not_web_ready: bool,
+    #[serde(default)]
+    pub binge_group: Option<String>,
+    #[serde(default)]
+    pub filename: Option<String>,
+    #[serde(default, rename = "videoSize")]
+    pub video_size: Option<u64>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
-struct RawTorrentioStream {
+pub struct RawStremioStream {
     pub name: Option<String>,
     pub title: Option<String>,
+    pub description: Option<String>,
     #[serde(rename = "infoHash")]
     pub info_hash: Option<String>,
     #[serde(rename = "fileIdx")]
     pub file_idx: Option<usize>,
     pub sources: Option<Vec<String>>,
+    pub url: Option<String>,
+    #[serde(rename = "behaviorHints")]
+    pub behavior_hints: Option<StreamBehaviorHints>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
+pub struct StremioStreamResponse {
+    #[serde(default)]
+    pub streams: Vec<RawStremioStream>,
 }
 
 #[derive(Clone, Debug)]
@@ -120,25 +136,6 @@ pub fn percent_encode(s: &str) -> String {
     res
 }
 
-/// Resolves the base URL for Torrentio.
-pub fn get_torrentio_base_url() -> String {
-    let cfg = state::load_addons_config();
-    for addon in &cfg.addons {
-        if addon.manifest.id == "com.stremio.torrentio" {
-            let tr = addon.transport_url.trim_end_matches("/manifest.json").trim_end_matches('/');
-            return tr.to_string();
-        }
-    }
-
-    if let Ok(val) = std::env::var("RT_STREAM_TORRENTIO_URL") {
-        let trimmed = val.trim();
-        if !trimmed.is_empty() {
-            return trimmed.trim_end_matches('/').to_string();
-        }
-    }
-
-    "https://torrentio.strem.fun".to_string()
-}
 
 /// Fetches a specific Cinemeta catalog (e.g. ("movie", "top", None) or ("series", "top", Some("genre=Action")))
 pub fn fetch_cinemeta_catalog(
@@ -261,49 +258,53 @@ pub fn fetch_meta_detail(item_type: &str, id: &str) -> Result<MetaDetail, String
     Ok(parsed.meta)
 }
 
-/// Fetches, scores and sorts streams from Torrentio for Surface RT hardware (Tegra 3 DXVA2)
+/// Checks whether an installed add-on is enabled and declares support for stream resources for `item_type`.
+fn addon_supports_stream(addon: &state::AddonDescriptor, item_type: &str) -> bool {
+    if !addon.enabled {
+        return false;
+    }
+    if !addon.manifest.types.is_empty() && !addon.manifest.types.iter().any(|t| t == item_type) {
+        return false;
+    }
+    addon.manifest.resources.iter().any(|r| {
+        if let Some(s) = r.as_str() {
+            s == "stream"
+        } else if let Some(obj) = r.as_object() {
+            if obj.get("name").and_then(|v| v.as_str()) == Some("stream") {
+                if let Some(types) = obj.get("types").and_then(|v| v.as_array()) {
+                    types.iter().any(|t| t.as_str() == Some(item_type))
+                } else {
+                    true
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    })
+}
+
+/// Fetches, scores and sorts streams from all installed & enabled stream add-ons for Surface RT hardware (Tegra 3 DXVA2)
 pub fn fetch_streams(
     item_type: &str,
     imdb_id: &str,
     season: u32,
     episode: u32,
 ) -> Result<Vec<CompatibleStream>, String> {
-    let base_url = get_torrentio_base_url();
-    let stream_url = if item_type == "series" {
-        format!("{}/stream/series/{}:{}:{}.json", base_url, imdb_id, season, episode)
-    } else {
-        format!("{}/stream/movie/{}.json", base_url, imdb_id)
-    };
+    let cfg = state::load_addons_config();
+    let mut stream_addons: Vec<&state::AddonDescriptor> = cfg
+        .addons
+        .iter()
+        .filter(|a| addon_supports_stream(a, item_type))
+        .collect();
 
-    log_net(&format!("Querying streams from Torrentio: {}", stream_url));
+    if stream_addons.is_empty() {
+        log_info("No enabled stream add-ons installed. Returning empty stream list.");
+        return Ok(Vec::new());
+    }
 
-    let agent = match create_agent() {
-        Ok(a) => a,
-        Err(e) => {
-            log_err(&e);
-            return Err(e);
-        }
-    };
-    let resp = match agent.get(&stream_url).call() {
-        Ok(r) => r,
-        Err(e) => {
-            log_ureq_err("Failed to query streams from Torrentio", &e);
-            return Err(format!("Torrentio request error: {}", e));
-        }
-    };
-
-    let parsed: TorrentioResponse = match resp.into_json() {
-        Ok(p) => p,
-        Err(e) => {
-            log_err(&format!("Error parsing Torrentio JSON: {}", e));
-            return Err(format!("Invalid Torrentio JSON: {}", e));
-        }
-    };
-
-    log_net(&format!(
-        "Torrentio reported {} total streams before filtering.",
-        parsed.streams.len()
-    ));
+    stream_addons.sort_by_key(|a| a.priority);
 
     let settings = crate::state::load_settings();
     let max_height = settings.playback.max_height;
@@ -312,294 +313,354 @@ pub fn fetch_streams(
 
     let mut compatible = Vec::new();
 
-    for item in parsed.streams {
-        let info_hash = match item.info_hash {
-            Some(h) if h.len() == 40 => h.to_lowercase(),
-            _ => continue,
+    for addon in stream_addons {
+        let base_url = addon
+            .transport_url
+            .trim_end_matches("/manifest.json")
+            .trim_end_matches('/');
+
+        let stream_url = if item_type == "series" {
+            format!("{}/stream/series/{}:{}:{}.json", base_url, imdb_id, season, episode)
+        } else {
+            format!("{}/stream/movie/{}.json", base_url, imdb_id)
         };
 
-        // Extract trackers
-        let mut trackers = Vec::new();
-        if let Some(srcs) = item.sources {
-            for s in srcs {
-                let clean_tracker = if let Some(stripped) = s.strip_prefix("tracker:") {
-                    stripped.to_string()
-                } else {
-                    s
-                };
-                if clean_tracker.starts_with("http://")
-                    || clean_tracker.starts_with("https://")
-                    || clean_tracker.starts_with("udp://")
-                {
-                    trackers.push(clean_tracker);
-                }
-            }
-        }
+        log_net(&format!(
+            "Querying streams from add-on '{}': {}",
+            addon.manifest.name, stream_url
+        ));
 
-        let raw_title = item.title.unwrap_or_default();
-        let upper = raw_title.to_uppercase();
-
-        // STRICT HARDWARE LIMIT REJECTION FOR TEGRA 3 (Windows RT 8.1):
-        // 4K, HEVC/x265, 10-bit and HDR cause 100% CPU lockup and lack hardware DXVA2 decode.
-        let is_rejected = upper.contains("2160P")
-            || upper.contains("4K")
-            || upper.contains("UHD")
-            || upper.contains("HEVC")
-            || upper.contains("X265")
-            || upper.contains("265")
-            || upper.contains("H265")
-            || upper.contains("H.265")
-            || upper.contains("10BIT")
-            || upper.contains("10-BIT")
-            || upper.contains("10 BIT")
-            || upper.contains("HI10P")
-            || upper.contains("HDR")
-            || upper.contains("HDR10")
-            || upper.contains("HLG")
-            || upper.contains("DV")
-            || upper.contains("DOVI")
-            || upper.contains("AV1")
-            || upper.contains("AV01")
-            || upper.contains("VP9");
-
-        if is_rejected {
-            continue;
-        }
-
-        let is_1080p = upper.contains("1080P") || upper.contains("FHD");
-        let is_720p = (upper.contains("720P") || upper.contains("HD")) && !is_1080p;
-        let is_480p = upper.contains("480P");
-        let is_sd = upper.contains("576P")
-            || upper.contains("BDRIP")
-            || upper.contains("BRRIP")
-            || upper.contains("DVDRIP")
-            || upper.contains("DVD-RIP");
-
-        // Resolution limit filter based on settings.playback.max_height
-        if max_height < 1080 && is_1080p {
-            continue;
-        }
-        if max_height <= 480 && (is_720p || is_1080p) {
-            continue;
-        }
-
-        // For 1080p, strictly ensure H.264 compatibility (Tegra 3 only decodes 8-bit H.264 up to 1080p)
-        if is_1080p && !upper.contains("X264") && !upper.contains("H264") && !upper.contains("H.264") && !upper.contains("AVC") && !upper.contains(".MP4") {
-            continue;
-        }
-
-        if !is_1080p && !is_720p && !is_480p && !is_sd {
-            if !upper.contains("X264") && !upper.contains("H264") && !upper.contains("H.264") {
+        let agent = match create_agent() {
+            Ok(a) => a,
+            Err(e) => {
+                log_err(&e);
                 continue;
             }
-        }
-
-        let quality_tag = if is_1080p {
-            "1080p"
-        } else if is_720p {
-            "720p"
-        } else if is_480p {
-            "480p"
-        } else {
-            "SD"
         };
 
-        // Determine Container: MP4 vs MKV
-        let is_mp4 = upper.contains(".MP4")
-            || upper.contains(" MP4")
-            || upper.contains("-MP4")
-            || upper.contains("[MP4]");
-
-        let container_tag = if is_mp4 { "MP4" } else { "MKV" };
-
-        // Determine Audio Codec: AAC / MP3 vs AC3 / EAC3 / DTS
-        let is_aac = upper.contains("AAC") || upper.contains("MP3");
-        let is_ac3 = upper.contains("AC3") || upper.contains("AC-3") || upper.contains("DD5.1");
-        let is_eac3 = upper.contains("EAC3") || upper.contains("E-AC-3") || upper.contains("DDP") || upper.contains("DD+");
-        let is_dts = upper.contains("DTS");
-
-        let audio_tag = if is_aac {
-            "AAC"
-        } else if is_eac3 {
-            "EAC3"
-        } else if is_ac3 {
-            "AC3"
-        } else if is_dts {
-            "DTS"
-        } else {
-            "Standard"
+        let resp = match agent.get(&stream_url).call() {
+            Ok(r) => r,
+            Err(e) => {
+                log_ureq_err(
+                    &format!("Failed to query streams from add-on '{}'", addon.manifest.name),
+                    &e,
+                );
+                continue;
+            }
         };
 
-        let lines: Vec<&str> = raw_title.lines().collect();
-        let release_name = lines.get(0).copied().unwrap_or("Torrent Stream").trim();
+        let parsed: StremioStreamResponse = match resp.into_json() {
+            Ok(p) => p,
+            Err(e) => {
+                log_err(&format!(
+                    "Error parsing stream JSON from add-on '{}': {}",
+                    addon.manifest.name, e
+                ));
+                continue;
+            }
+        };
 
-        let mut size = "N/A".to_string();
-        let mut seeders_num: u32 = 0;
+        log_net(&format!(
+            "Add-on '{}' reported {} total streams before filtering.",
+            addon.manifest.name,
+            parsed.streams.len()
+        ));
 
-        for line in lines.iter().skip(1) {
-            let mut prev_word = "";
-            for part in line.split_whitespace() {
-                let p_upper = part.to_uppercase();
-                if p_upper == "GB" || p_upper == "MB" || p_upper == "GIB" || p_upper == "MIB" {
-                    if !prev_word.is_empty() && prev_word.chars().any(|c| c.is_ascii_digit()) {
-                        size = format!("{} {}", prev_word, part);
+        for item in parsed.streams {
+            let info_hash = match item.info_hash {
+                Some(h) if h.len() == 40 => h.to_lowercase(),
+                _ => continue,
+            };
+
+            // Extract trackers
+            let mut trackers = Vec::new();
+            if let Some(srcs) = item.sources {
+                for s in srcs {
+                    let clean_tracker = if let Some(stripped) = s.strip_prefix("tracker:") {
+                        stripped.to_string()
                     } else {
-                        size = part.to_string();
+                        s
+                    };
+                    if clean_tracker.starts_with("http://")
+                        || clean_tracker.starts_with("https://")
+                        || clean_tracker.starts_with("udp://")
+                    {
+                        trackers.push(clean_tracker);
                     }
-                } else if p_upper.ends_with("GB") || p_upper.ends_with("MB") || p_upper.ends_with("GIB") || p_upper.ends_with("MIB") {
-                    if part.chars().any(|c| c.is_ascii_digit()) {
-                        size = part.to_string();
-                    }
-                }
-                prev_word = part;
-            }
-            if let Some(pos) = line.find('👤') {
-                let after = &line[pos + '👤'.len_utf8()..];
-                if let Some(num_str) = after.split_whitespace().next() {
-                    let digits: String = num_str.chars().filter(|c| c.is_ascii_digit()).collect();
-                    seeders_num = digits.parse::<u32>().unwrap_or(0);
-                }
-            } else if let Some(pos) = line.find('👥') {
-                let after = &line[pos + '👥'.len_utf8()..];
-                if let Some(num_str) = after.split_whitespace().next() {
-                    let digits: String = num_str.chars().filter(|c| c.is_ascii_digit()).collect();
-                    seeders_num = digits.parse::<u32>().unwrap_or(0);
                 }
             }
-        }
 
-        // Detect Torrent Pack (Season Pack / Complete Series / Disc Collection)
-        let is_pack = upper.contains("COMPLETE")
-            || upper.contains("SEASON")
-            || upper.contains("S01-")
-            || upper.contains("S01 -")
-            || upper.contains("S02-")
-            || upper.contains("S03-")
-            || upper.contains("PACK")
-            || upper.contains("COLLECTION");
+            let mut raw_title = item.title.or(item.name).or(item.description).unwrap_or_default();
+            if let Some(hints) = item.behavior_hints {
+                if let Some(fname) = hints.filename {
+                    if !raw_title.contains(&fname) {
+                        raw_title = format!("{}\n{}", fname, raw_title);
+                    }
+                }
+            }
+            let upper = raw_title.to_uppercase();
 
-        // SURFACE RT STREAM SCORING ALGORITHM:
-        let mut score: i32 = (seeders_num.min(500) as i32) * 2;
+            // STRICT HARDWARE LIMIT REJECTION FOR TEGRA 3 (Windows RT 8.1):
+            // 4K, HEVC/x265, 10-bit and HDR cause 100% CPU lockup and lack hardware DXVA2 decode.
+            let is_rejected = upper.contains("2160P")
+                || upper.contains("4K")
+                || upper.contains("UHD")
+                || upper.contains("HEVC")
+                || upper.contains("X265")
+                || upper.contains("265")
+                || upper.contains("H265")
+                || upper.contains("H.265")
+                || upper.contains("10BIT")
+                || upper.contains("10-BIT")
+                || upper.contains("10 BIT")
+                || upper.contains("HI10P")
+                || upper.contains("HDR")
+                || upper.contains("HDR10")
+                || upper.contains("HLG")
+                || upper.contains("DV")
+                || upper.contains("DOVI")
+                || upper.contains("AV1")
+                || upper.contains("AV01")
+                || upper.contains("VP9");
 
-        // Container scoring based on settings.playback.prefer_mp4
-        if prefer_mp4 {
-            if is_mp4 {
-                score += 10000; // Heavily prioritize MP4 for 100% native Surface RT hardware decoding
-            } else if is_aac {
-                score += 7500;
+            if is_rejected {
+                continue;
+            }
+
+            let is_1080p = upper.contains("1080P") || upper.contains("FHD");
+            let is_720p = (upper.contains("720P") || upper.contains("HD")) && !is_1080p;
+            let is_480p = upper.contains("480P");
+            let is_sd = upper.contains("576P")
+                || upper.contains("BDRIP")
+                || upper.contains("BRRIP")
+                || upper.contains("DVDRIP")
+                || upper.contains("DVD-RIP");
+
+            // Resolution limit filter based on settings.playback.max_height
+            if max_height < 1080 && is_1080p {
+                continue;
+            }
+            if max_height <= 480 && (is_720p || is_1080p) {
+                continue;
+            }
+
+            // For 1080p, strictly ensure H.264 compatibility (Tegra 3 only decodes 8-bit H.264 up to 1080p)
+            if is_1080p && !upper.contains("X264") && !upper.contains("H264") && !upper.contains("H.264") && !upper.contains("AVC") && !upper.contains(".MP4") {
+                continue;
+            }
+
+            if !is_1080p && !is_720p && !is_480p && !is_sd {
+                if !upper.contains("X264") && !upper.contains("H264") && !upper.contains("H.264") {
+                    continue;
+                }
+            }
+
+            let quality_tag = if is_1080p {
+                "1080p"
+            } else if is_720p {
+                "720p"
+            } else if is_480p {
+                "480p"
+            } else {
+                "SD"
+            };
+
+            // Determine Container: MP4 vs MKV
+            let is_mp4 = upper.contains(".MP4")
+                || upper.contains(" MP4")
+                || upper.contains("-MP4")
+                || upper.contains("[MP4]");
+
+            let container_tag = if is_mp4 { "MP4" } else { "MKV" };
+
+            // Determine Audio Codec: AAC / MP3 vs AC3 / EAC3 / DTS
+            let is_aac = upper.contains("AAC") || upper.contains("MP3");
+            let is_ac3 = upper.contains("AC3") || upper.contains("AC-3") || upper.contains("DD5.1");
+            let is_eac3 = upper.contains("EAC3") || upper.contains("E-AC-3") || upper.contains("DDP") || upper.contains("DD+");
+            let is_dts = upper.contains("DTS");
+
+            let audio_tag = if is_aac {
+                "AAC"
+            } else if is_eac3 {
+                "EAC3"
+            } else if is_ac3 {
+                "AC3"
+            } else if is_dts {
+                "DTS"
+            } else {
+                "Standard"
+            };
+
+            let lines: Vec<&str> = raw_title.lines().collect();
+            let release_name = lines.get(0).copied().unwrap_or("Torrent Stream").trim();
+
+            let mut size = "N/A".to_string();
+            let mut seeders_num: u32 = 0;
+
+            for line in lines.iter().skip(1) {
+                let mut prev_word = "";
+                for part in line.split_whitespace() {
+                    let p_upper = part.to_uppercase();
+                    if p_upper == "GB" || p_upper == "MB" || p_upper == "GIB" || p_upper == "MIB" {
+                        if !prev_word.is_empty() && prev_word.chars().any(|c| c.is_ascii_digit()) {
+                            size = format!("{} {}", prev_word, part);
+                        } else {
+                            size = part.to_string();
+                        }
+                    } else if p_upper.ends_with("GB") || p_upper.ends_with("MB") || p_upper.ends_with("GIB") || p_upper.ends_with("MIB") {
+                        if part.chars().any(|c| c.is_ascii_digit()) {
+                            size = part.to_string();
+                        }
+                    }
+                    prev_word = part;
+                }
+                if let Some(pos) = line.find('👤') {
+                    let after = &line[pos + '👤'.len_utf8()..];
+                    if let Some(num_str) = after.split_whitespace().next() {
+                        let digits: String = num_str.chars().filter(|c| c.is_ascii_digit()).collect();
+                        seeders_num = digits.parse::<u32>().unwrap_or(0);
+                    }
+                } else if let Some(pos) = line.find('👥') {
+                    let after = &line[pos + '👥'.len_utf8()..];
+                    if let Some(num_str) = after.split_whitespace().next() {
+                        let digits: String = num_str.chars().filter(|c| c.is_ascii_digit()).collect();
+                        seeders_num = digits.parse::<u32>().unwrap_or(0);
+                    }
+                }
+            }
+
+            // Detect Torrent Pack (Season Pack / Complete Series / Disc Collection)
+            let is_pack = upper.contains("COMPLETE")
+                || upper.contains("SEASON")
+                || upper.contains("S01-")
+                || upper.contains("S01 -")
+                || upper.contains("S02-")
+                || upper.contains("S03-")
+                || upper.contains("PACK")
+                || upper.contains("COLLECTION");
+
+            // SURFACE RT STREAM SCORING ALGORITHM:
+            let mut score: i32 = (seeders_num.min(500) as i32) * 2;
+
+            // Container scoring based on settings.playback.prefer_mp4
+            if prefer_mp4 {
+                if is_mp4 {
+                    score += 10000; // Heavily prioritize MP4 for 100% native Surface RT hardware decoding
+                } else if is_aac {
+                    score += 7500;
+                } else {
+                    score += 5000;
+                }
+
+                if is_aac {
+                    score += 1000;
+                } else if is_ac3 || is_eac3 || is_dts {
+                    score -= 300; // Demote non-native audio formats
+                }
             } else {
                 score += 5000;
+                if is_aac {
+                    score += 1500;
+                } else if is_ac3 || is_eac3 || is_dts {
+                    score -= 300;
+                }
             }
 
-            if is_aac {
-                score += 1000;
-            } else if is_ac3 || is_eac3 || is_dts {
-                score -= 300; // Demote non-native audio formats
-            }
-        } else {
-            // Equal container tier (+5000) so streams rank primarily by resolution and active seeders
-            score += 5000;
-            if is_aac {
-                score += 1500;
-            } else if is_ac3 || is_eac3 || is_dts {
-                score -= 300;
-            }
-        }
-
-        // Resolution score based on settings.playback.max_height
-        if max_height >= 1080 {
-            if is_1080p {
-                score += 300;
-            } else if is_720p {
-                score += 200;
+            // Resolution score based on settings.playback.max_height
+            if max_height >= 1080 {
+                if is_1080p {
+                    score += 300;
+                } else if is_720p {
+                    score += 200;
+                } else {
+                    score += 100;
+                }
+            } else if max_height >= 720 {
+                if is_720p {
+                    score += 300;
+                } else {
+                    score += 100;
+                }
             } else {
-                score += 100;
+                score += 300; // 480p / SD
             }
-        } else if max_height >= 720 {
-            if is_720p {
-                score += 300;
+
+            // Default Audio Language preference bonus (+500)
+            let matches_audio_lang = if audio_lang.is_empty() || audio_lang == "en" || audio_lang == "eng" {
+                upper.contains("ENG") || upper.contains("ENGLISH") || upper.contains("MULTI") || upper.contains("DUAL")
+            } else if audio_lang == "es" || audio_lang == "spa" {
+                upper.contains("ESP") || upper.contains("SPA") || upper.contains("SPANISH") || upper.contains("CASTELLANO") || upper.contains("LATINO") || upper.contains("MULTI") || upper.contains("DUAL")
+            } else if audio_lang == "por" || audio_lang == "pt" || audio_lang == "pob" {
+                upper.contains("POR") || upper.contains("PT-BR") || upper.contains("PORTUGUESE") || upper.contains("BRAZILIAN") || upper.contains("DUB") || upper.contains("MULTI") || upper.contains("DUAL")
+            } else if audio_lang == "fre" || audio_lang == "fr" {
+                upper.contains("FRE") || upper.contains("FRENCH") || upper.contains("FRANCAIS") || upper.contains("VF") || upper.contains("VFF") || upper.contains("MULTI") || upper.contains("DUAL")
+            } else if audio_lang == "jpn" || audio_lang == "ja" {
+                upper.contains("JPN") || upper.contains("JAPANESE") || upper.contains("MULTI") || upper.contains("DUAL")
+            } else if audio_lang == "ger" || audio_lang == "de" {
+                upper.contains("GER") || upper.contains("GERMAN") || upper.contains("DEUTSCH") || upper.contains("MULTI") || upper.contains("DUAL")
+            } else if audio_lang == "ita" || audio_lang == "it" {
+                upper.contains("ITA") || upper.contains("ITALIAN") || upper.contains("ITALIANO") || upper.contains("MULTI") || upper.contains("DUAL")
+            } else if audio_lang == "rus" || audio_lang == "ru" {
+                upper.contains("RUS") || upper.contains("RUSSIAN") || upper.contains("MULTI") || upper.contains("DUAL")
             } else {
-                score += 100;
+                let code_up = audio_lang.to_uppercase();
+                upper.contains(&code_up) || upper.contains("MULTI") || upper.contains("DUAL")
+            };
+
+            if matches_audio_lang {
+                score += 500;
             }
-        } else {
-            score += 300; // 480p / SD
+
+            // Torrent pack adjustment: if it's a pack without specific episode file index, demote heavily
+            if is_pack && item.file_idx.is_none() {
+                score -= 5000;
+            }
+
+            // COMPATIBILITY BADGE
+            let badge = if is_mp4 {
+                "[★ NATIVE MP4]"
+            } else if is_aac {
+                "[★ MKV H264+AAC]"
+            } else if is_eac3 {
+                "[MKV H264 EAC3]"
+            } else if is_ac3 {
+                "[MKV H264 AC3]"
+            } else if is_dts {
+                "[MKV H264 DTS]"
+            } else {
+                "[MKV H264]"
+            };
+
+            // Clean release name for display
+            let display_title = if !release_name.is_empty() {
+                release_name.to_string()
+            } else {
+                format!("{} {}", badge, quality_tag)
+            };
+
+            compatible.push(CompatibleStream {
+                display_title,
+                quality: format!("{} H.264", quality_tag),
+                size,
+                seeders: seeders_num,
+                info_hash,
+                file_idx: item.file_idx,
+                trackers,
+                container: format!("[{}]", container_tag),
+                audio_codec: audio_tag.to_string(),
+                is_mp4,
+                is_pack,
+                score,
+                raw_title,
+            });
         }
-
-        // Default Audio Language preference bonus (+500)
-        let matches_audio_lang = if audio_lang.is_empty() || audio_lang == "en" || audio_lang == "eng" {
-            upper.contains("ENG") || upper.contains("ENGLISH") || upper.contains("MULTI") || upper.contains("DUAL")
-        } else if audio_lang == "es" || audio_lang == "spa" {
-            upper.contains("ESP") || upper.contains("SPA") || upper.contains("SPANISH") || upper.contains("CASTELLANO") || upper.contains("LATINO") || upper.contains("MULTI") || upper.contains("DUAL")
-        } else if audio_lang == "por" || audio_lang == "pt" || audio_lang == "pob" {
-            upper.contains("POR") || upper.contains("PT-BR") || upper.contains("PORTUGUESE") || upper.contains("BRAZILIAN") || upper.contains("DUB") || upper.contains("MULTI") || upper.contains("DUAL")
-        } else if audio_lang == "fre" || audio_lang == "fr" {
-            upper.contains("FRE") || upper.contains("FRENCH") || upper.contains("FRANCAIS") || upper.contains("VF") || upper.contains("VFF") || upper.contains("MULTI") || upper.contains("DUAL")
-        } else if audio_lang == "jpn" || audio_lang == "ja" {
-            upper.contains("JPN") || upper.contains("JAPANESE") || upper.contains("MULTI") || upper.contains("DUAL")
-        } else if audio_lang == "ger" || audio_lang == "de" {
-            upper.contains("GER") || upper.contains("GERMAN") || upper.contains("DEUTSCH") || upper.contains("MULTI") || upper.contains("DUAL")
-        } else if audio_lang == "ita" || audio_lang == "it" {
-            upper.contains("ITA") || upper.contains("ITALIAN") || upper.contains("ITALIANO") || upper.contains("MULTI") || upper.contains("DUAL")
-        } else if audio_lang == "rus" || audio_lang == "ru" {
-            upper.contains("RUS") || upper.contains("RUSSIAN") || upper.contains("MULTI") || upper.contains("DUAL")
-        } else {
-            let code_up = audio_lang.to_uppercase();
-            upper.contains(&code_up) || upper.contains("MULTI") || upper.contains("DUAL")
-        };
-
-        if matches_audio_lang {
-            score += 500;
-        }
-
-        // Torrent pack adjustment: if it's a pack without specific episode file index, demote heavily
-        if is_pack && item.file_idx.is_none() {
-            score -= 5000;
-        }
-
-        // COMPATIBILITY BADGE
-        let badge = if is_mp4 {
-            "[★ NATIVE MP4]"
-        } else if is_aac {
-            "[★ MKV H264+AAC]"
-        } else if is_eac3 {
-            "[MKV H264 EAC3]"
-        } else if is_ac3 {
-            "[MKV H264 AC3]"
-        } else if is_dts {
-            "[MKV H264 DTS]"
-        } else {
-            "[MKV H264]"
-        };
-
-        // Clean release name for display
-        let display_title = if !release_name.is_empty() {
-            release_name.to_string()
-        } else {
-            format!("{} {}", badge, quality_tag)
-        };
-
-        compatible.push(CompatibleStream {
-            display_title,
-            quality: format!("{} H.264", quality_tag),
-            size,
-            seeders: seeders_num,
-            info_hash,
-            file_idx: item.file_idx,
-            trackers,
-            container: format!("[{}]", container_tag),
-            audio_codec: audio_tag.to_string(),
-            is_mp4,
-            is_pack,
-            score,
-            raw_title,
-        });
     }
 
     // Sort by calculated score (highest score first)
     compatible.sort_by(|a, b| b.score.cmp(&a.score));
 
     log_net(&format!(
-        "Compatible streams found: {} ({} native MP4/AAC on top).",
+        "Compatible streams found across all add-ons: {} ({} native MP4/AAC on top).",
         compatible.len(),
         compatible.iter().filter(|s| s.score >= 5000).count()
     ));

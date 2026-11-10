@@ -47,6 +47,32 @@ static AUTOPLAY_TRIGGERED: Mutex<bool> = Mutex::new(false);
 static HOME_RAW_ROWS: Mutex<Vec<Vec<addons::MetaItem>>> = Mutex::new(Vec::new());
 static HOME_ROW_OFFSETS: Mutex<[usize; 6]> = Mutex::new([0; 6]);
 
+pub fn compute_cards_per_page(ui: &MainWindow) -> usize {
+    let settings = state::load_settings();
+    let card_slot_w = match settings.ui.card_size.as_str() {
+        "s" => 126.0,
+        "l" => 172.0,
+        _ => 148.0, // "m"
+    };
+
+    let slint_hwnd = get_slint_hwnd(&ui.window());
+    let client_w = if !slint_hwnd.is_null() {
+        unsafe {
+            let mut rc: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
+            windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect(slint_hwnd, &mut rc);
+            let w = rc.right - rc.left;
+            if w > 0 { w as f64 } else { 1280.0 }
+        }
+    } else {
+        1280.0
+    };
+
+    // Sidebar: 56px, content padding: 16px * 2 = 32px, scrollbar: ~12px
+    let avail_w = (client_w - 56.0 - 44.0).max(280.0);
+    let count = ((avail_w + 10.0) / card_slot_w).floor() as usize;
+    count.clamp(3, 14)
+}
+
 pub fn update_home_row_slice(ui: &MainWindow, row_idx: usize) {
     let guard = HOME_RAW_ROWS.lock().unwrap();
     if row_idx >= guard.len() {
@@ -57,11 +83,14 @@ pub fn update_home_row_slice(ui: &MainWindow, row_idx: usize) {
     if total == 0 {
         return;
     }
-    let offsets = HOME_ROW_OFFSETS.lock().unwrap();
+    let page_size = compute_cards_per_page(ui);
+    let mut offsets = HOME_ROW_OFFSETS.lock().unwrap();
+    if offsets[row_idx] >= total {
+        offsets[row_idx] = 0;
+    }
     let offset = offsets[row_idx];
     drop(offsets);
 
-    let page_size = 6;
     let end = (offset + page_size).min(total);
     let slice: Vec<CatalogItem> = full_row[offset..end].iter().map(meta_to_catalog_item).collect();
     let indicator = format!("{}–{} of {}", offset + 1, end, total);
@@ -94,7 +123,13 @@ pub fn update_home_row_slice(ui: &MainWindow, row_idx: usize) {
         }
         _ => {}
     }
-    ui.invoke_request_lazy_range(row_idx as i32, 0, 6);
+    ui.invoke_request_lazy_range(row_idx as i32, 0, page_size as i32);
+}
+
+pub fn refresh_all_home_slices(ui: &MainWindow) {
+    for i in 0..6 {
+        update_home_row_slice(ui, i);
+    }
 }
 
 pub fn step_home_row_page(ui: &MainWindow, row_idx: usize, forward: bool) {
@@ -105,10 +140,10 @@ pub fn step_home_row_page(ui: &MainWindow, row_idx: usize, forward: bool) {
         }
         guard[row_idx].len()
     };
-    if total <= 6 {
+    let page_size = compute_cards_per_page(ui);
+    if total <= page_size {
         return;
     }
-    let page_size = 6;
     let mut offsets = HOME_ROW_OFFSETS.lock().unwrap();
     if forward {
         if offsets[row_idx] + page_size < total {
@@ -142,10 +177,163 @@ fn cache_get(id: &str) -> Option<addons::MetaItem> {
 
 // Global child video HWND stored as isize for thread safety
 static VIDEO_HWND: Mutex<isize> = Mutex::new(0);
+pub fn get_video_hwnd() -> HWND {
+    *VIDEO_HWND.lock().unwrap() as HWND
+}
 static LAST_RECT: Mutex<(i32, i32, i32, i32)> = Mutex::new((0, 0, 0, 0));
 static LAST_PLAYER_STATE: Mutex<u32> = Mutex::new(999);
 static FULLSCREEN_HANDLER: Mutex<Option<Box<dyn Fn() + Send + 'static>>> = Mutex::new(None);
 static LAST_MOUSE_POS: Mutex<(i16, i16)> = Mutex::new((-1, -1));
+
+static SLINT_PREV_WNDPROC: Mutex<isize> = Mutex::new(0);
+
+fn copy_text_to_clipboard(text: &str) {
+    use windows_sys::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
+    use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+    let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+    let bytes_len = wide.len() * 2;
+    unsafe {
+        if OpenClipboard(std::ptr::null_mut()) != 0 {
+            EmptyClipboard();
+            let h_mem = GlobalAlloc(GMEM_MOVEABLE, bytes_len);
+            if !h_mem.is_null() {
+                let ptr = GlobalLock(h_mem) as *mut u16;
+                if !ptr.is_null() {
+                    std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr, wide.len());
+                    GlobalUnlock(h_mem);
+                    const CF_UNICODETEXT: u32 = 13;
+                    SetClipboardData(CF_UNICODETEXT, h_mem as _);
+                }
+            }
+            CloseClipboard();
+        }
+    }
+}
+
+#[link(name = "user32")]
+extern "system" {
+    fn GetFocus() -> HWND;
+}
+
+unsafe extern "system" fn slint_main_wnd_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    const WM_KEYDOWN: u32 = 0x0100;
+    const WM_GETMINMAXINFO: u32 = 0x0024;
+    const VK_SPACE: usize = 0x20;
+    const VK_LEFT: usize = 0x25;
+    const VK_UP: usize = 0x26;
+    const VK_RIGHT: usize = 0x27;
+    const VK_DOWN: usize = 0x28;
+    const VK_ESCAPE: usize = 0x1B;
+
+    if msg == WM_GETMINMAXINFO && lparam != 0 {
+        let mmi = lparam as *mut windows_sys::Win32::UI::WindowsAndMessaging::MINMAXINFO;
+        (*mmi).ptMinTrackSize.x = 860;
+        (*mmi).ptMinTrackSize.y = 560;
+        return 0;
+    }
+
+    if msg == WM_KEYDOWN {
+        let mut handle_shortcut = true;
+        let focus_hwnd = unsafe { GetFocus() };
+        if !focus_hwnd.is_null() && focus_hwnd != hwnd {
+            let mut class_name = [0u16; 64];
+            let len = unsafe {
+                windows_sys::Win32::UI::WindowsAndMessaging::GetClassNameW(
+                    focus_hwnd,
+                    class_name.as_mut_ptr(),
+                    64,
+                )
+            };
+            if len > 0 {
+                let name = String::from_utf16_lossy(&class_name[..len as usize]);
+                if name.eq_ignore_ascii_case("edit") {
+                    handle_shortcut = false;
+                }
+            }
+        }
+
+        if handle_shortcut {
+            match wparam {
+                VK_SPACE => {
+                    let _ = player::toggle_pause();
+                    crate::ui::overlay::notify_user_activity();
+                    return 0;
+                }
+                VK_LEFT => {
+                    let _ = player::seek_relative(-10);
+                    crate::ui::overlay::notify_user_activity();
+                    return 0;
+                }
+                VK_RIGHT => {
+                    let _ = player::seek_relative(10);
+                    crate::ui::overlay::notify_user_activity();
+                    return 0;
+                }
+                VK_UP => {
+                    let cur = player::get_volume();
+                    let new_vol = (cur + 0.05).clamp(0.0, 1.0);
+                    let _ = player::set_volume(new_vol);
+                    crate::ui::overlay::set_overlay_volume((new_vol * 100.0) as i32);
+                    crate::ui::overlay::notify_user_activity();
+                    return 0;
+                }
+                VK_DOWN => {
+                    let cur = player::get_volume();
+                    let new_vol = (cur - 0.05).clamp(0.0, 1.0);
+                    let _ = player::set_volume(new_vol);
+                    crate::ui::overlay::set_overlay_volume((new_vol * 100.0) as i32);
+                    crate::ui::overlay::notify_user_activity();
+                    return 0;
+                }
+                0x46 /* 'F' */ | 0x66 /* 'f' */ => {
+                    let _ = slint::invoke_from_event_loop(|| {
+                        if let Some(h) = FULLSCREEN_HANDLER.lock().unwrap().as_ref() {
+                            h();
+                        }
+                    });
+                    crate::ui::overlay::notify_user_activity();
+                    return 0;
+                }
+                0x4D /* 'M' */ | 0x6D /* 'm' */ => {
+                    let cur_muted = player::get_muted();
+                    let new_muted = !cur_muted;
+                    let _ = player::set_muted(new_muted);
+                    let vol = player::get_volume();
+                    crate::ui::overlay::set_overlay_muted(new_muted, (vol * 100.0) as i32);
+                    crate::ui::overlay::notify_user_activity();
+                    return 0;
+                }
+                VK_ESCAPE => {
+                    let _ = slint::invoke_from_event_loop(|| {
+                        if let Some(h) = FULLSCREEN_HANDLER.lock().unwrap().as_ref() {
+                            h();
+                        }
+                    });
+                    return 0;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let prev = *SLINT_PREV_WNDPROC.lock().unwrap();
+    if prev != 0 {
+        windows_sys::Win32::UI::WindowsAndMessaging::CallWindowProcW(
+            std::mem::transmute(prev),
+            hwnd,
+            msg,
+            wparam,
+            lparam,
+        )
+    } else {
+        DefWindowProcW(hwnd, msg, wparam, lparam)
+    }
+}
 
 unsafe extern "system" fn video_wnd_proc(
     hwnd: HWND,
@@ -173,6 +361,24 @@ unsafe extern "system" fn video_wnd_proc(
         return 0;
     }
     if msg == WM_LBUTTONDBLCLK {
+        let x = (lparam & 0xFFFF) as i16;
+        let mut rc: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
+        windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rc);
+        let w = rc.right - rc.left;
+        if w > 0 {
+            if (x as i32) < w / 3 {
+                // Double-tap left: seek -10s
+                let _ = player::seek_relative(-10);
+                crate::ui::overlay::notify_user_activity();
+                return 0;
+            } else if (x as i32) > (w * 2) / 3 {
+                // Double-tap right: seek +10s
+                let _ = player::seek_relative(10);
+                crate::ui::overlay::notify_user_activity();
+                return 0;
+            }
+        }
+
         let _ = slint::invoke_from_event_loop(|| {
             if let Some(h) = FULLSCREEN_HANDLER.lock().unwrap().as_ref() {
                 h();
@@ -249,6 +455,54 @@ pub fn get_slint_hwnd(window: &slint::Window) -> HWND {
         }
     }
     std::ptr::null_mut()
+}
+
+/// Loads the native PE icon (resource ID 1) and applies it to the window via WM_SETICON and SetClassLongW.
+/// This ensures Windows RT 8.1 taskbar, title bar, and Alt+Tab switcher display strawberry32.ico properly.
+pub fn apply_app_icon(hwnd: HWND) {
+    if hwnd.is_null() {
+        return;
+    }
+    unsafe {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetSystemMetrics, LoadImageW, SendMessageW, SetClassLongW, GCLP_HICON, GCLP_HICONSM,
+            ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_DEFAULTCOLOR, LR_SHARED, SM_CXICON, SM_CXSMICON,
+            SM_CYICON, SM_CYSMICON, WM_SETICON,
+        };
+        let hinstance = windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null());
+        if !hinstance.is_null() {
+            let cx_big = GetSystemMetrics(SM_CXICON);
+            let cy_big = GetSystemMetrics(SM_CYICON);
+            let cx_sm = GetSystemMetrics(SM_CXSMICON);
+            let cy_sm = GetSystemMetrics(SM_CYSMICON);
+
+            let icon_big = LoadImageW(
+                hinstance,
+                1 as *const u16,
+                IMAGE_ICON,
+                cx_big,
+                cy_big,
+                LR_DEFAULTCOLOR | LR_SHARED,
+            );
+            let icon_sm = LoadImageW(
+                hinstance,
+                1 as *const u16,
+                IMAGE_ICON,
+                cx_sm,
+                cy_sm,
+                LR_DEFAULTCOLOR | LR_SHARED,
+            );
+
+            if !icon_big.is_null() {
+                SendMessageW(hwnd, WM_SETICON, ICON_BIG as usize, icon_big as usize as isize);
+                SetClassLongW(hwnd, GCLP_HICON, icon_big as usize as i32);
+            }
+            if !icon_sm.is_null() {
+                SendMessageW(hwnd, WM_SETICON, ICON_SMALL as usize, icon_sm as usize as isize);
+                SetClassLongW(hwnd, GCLP_HICONSM, icon_sm as usize as i32);
+            }
+        }
+    }
 }
 
 /// Re-reads the main window's client rect and resizes the video HWND, the controls overlay and the
@@ -357,7 +611,7 @@ pub fn ensure_video_hwnd(window: &slint::Window) -> HWND {
             0,
             class_name.as_ptr(),
             to_wide("Video Viewport").as_ptr(),
-            WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
+            WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN | windows_sys::Win32::UI::WindowsAndMessaging::WS_VISIBLE,
             0,
             0,
             800,
@@ -369,6 +623,10 @@ pub fn ensure_video_hwnd(window: &slint::Window) -> HWND {
         );
 
         if !v_hwnd.is_null() {
+            windows_sys::Win32::UI::WindowsAndMessaging::ShowWindow(
+                v_hwnd,
+                windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOW,
+            );
             log_info(&format!(
                 "Child Video HWND created successfully: 0x{:X} (parent: 0x{:X})",
                 v_hwnd as usize, slint_hwnd as usize
@@ -386,28 +644,88 @@ pub fn ensure_video_hwnd(window: &slint::Window) -> HWND {
 /// Populates the Library / Continue Watching model from persistent watch history
 pub fn refresh_library(ui: &MainWindow) {
     let history = state::load_watch_history();
-    let lib_items: Vec<CatalogItem> = history
-        .items
-        .into_iter()
-        .map(|item| CatalogItem {
-            id: item.meta_id.into(),
-            title: item.title.into(),
+    let mut cw_items: Vec<CatalogItem> = Vec::new();
+    let mut lib_items: Vec<CatalogItem> = Vec::new();
+    let mut cw_posters: Vec<(usize, String)> = Vec::new();
+    let mut lib_posters: Vec<(usize, String)> = Vec::new();
+
+    for item in &history.items {
+        let cat_item = CatalogItem {
+            id: item.meta_id.clone().into(),
+            title: item.title.clone().into(),
             year: if let (Some(s), Some(e)) = (item.season, item.episode) {
                 format!("S{}:E{}", s, e).into()
             } else {
                 "".into()
             },
-            item_type: item.item_type.into(),
+            item_type: item.item_type.clone().into(),
             poster: slint::Image::default(),
             has_poster: false,
-        })
-        .collect();
+        };
+
+        let id_str = item.meta_id.clone();
+        let poster_url = item.poster.clone()
+            .or_else(|| cache_get(&id_str).and_then(|m| m.poster))
+            .unwrap_or_else(|| format!("https://images.metahub.space/poster/small/{}/img.jpg", id_str));
+
+        // Items with progress > 10s and not finished (< dur - 15s) qualify for Continue Watching
+        if item.pos_sec > 10 && (item.dur_sec == 0 || item.pos_sec < item.dur_sec.saturating_sub(15)) && cw_items.len() < 8 {
+            cw_posters.push((cw_items.len(), poster_url.clone()));
+            cw_items.push(cat_item.clone());
+        }
+
+        lib_posters.push((lib_items.len(), poster_url));
+        lib_items.push(cat_item);
+    }
+
+    let has_cw = !cw_items.is_empty();
+    ui.set_has_continue_watching(has_cw);
+    ui.set_home_continue_watching(ModelRc::from(Rc::new(VecModel::from(cw_items))));
     ui.set_library_items(ModelRc::from(Rc::new(VecModel::from(lib_items))));
+
+    // Asynchronously fetch posters for Continue Watching items
+    let ui_weak = ui.as_weak();
+    for (cw_idx, url) in cw_posters {
+        let weak = ui_weak.clone();
+        crate::ui::images::request_image(url, 138, 207, move |opt_img| {
+            if let Some(img) = opt_img {
+                if let Some(u) = weak.upgrade() {
+                    let m = u.get_home_continue_watching();
+                    if let Some(mut it) = m.row_data(cw_idx) {
+                        it.poster = img;
+                        it.has_poster = true;
+                        m.set_row_data(cw_idx, it);
+                    }
+                }
+            }
+        });
+    }
+
+    // Asynchronously fetch posters for Library items (up to 16)
+    for (lib_idx, url) in lib_posters.into_iter().take(16) {
+        let weak = ui_weak.clone();
+        crate::ui::images::request_image(url, 138, 207, move |opt_img| {
+            if let Some(img) = opt_img {
+                if let Some(u) = weak.upgrade() {
+                    let m = u.get_library_items();
+                    if let Some(mut it) = m.row_data(lib_idx) {
+                        it.poster = img;
+                        it.has_poster = true;
+                        m.set_row_data(lib_idx, it);
+                    }
+                }
+            }
+        });
+    }
 }
 
 pub fn refresh_settings(ui: &MainWindow) {
     let settings = state::load_settings();
     let cfg = state::load_addons_config();
+
+    let crash_file = state::get_logs_dir().join("crash.log");
+    let has_crash = crash_file.is_file() && crash_file.metadata().map(|m| m.len() > 0).unwrap_or(false);
+    ui.set_has_crash_report(has_crash);
 
     ui.set_settings_max_res(settings.playback.max_height as i32);
     ui.set_settings_prefer_mp4(settings.playback.prefer_mp4);
@@ -504,8 +822,6 @@ pub fn load_multi_row_home_catalog(app_weak: slint::Weak<MainWindow>) {
 
     let app_weak2 = app_weak.clone();
     std::thread::spawn(move || {
-        let _ = state::setup_dev_default_addons();
-
         // Fetch 6 distinct real catalogs from Cinemeta
         let r1 = addons::fetch_cinemeta_catalog("movie", "top", None).unwrap_or_default();
         let r2 = addons::fetch_cinemeta_catalog("series", "top", None).unwrap_or_default();
@@ -768,6 +1084,61 @@ pub fn run_app() -> Result<(), String> {
     refresh_library(&app);
     refresh_settings(&app);
 
+    // Explicitly show window so native Win32 HWND is created and mapped immediately
+    app.show().map_err(|e| format!("Failed to show Slint MainWindow: {}", e))?;
+
+    let settings = state::load_settings();
+    let slint_hwnd = get_slint_hwnd(&app.window());
+    log_info(&format!("Slint MainWindow mapped to HWND 0x{:X}", slint_hwnd as usize));
+
+    if !slint_hwnd.is_null() {
+        apply_app_icon(slint_hwnd);
+        unsafe {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowLongW, ShowWindow, SW_MAXIMIZE};
+            const GWL_WNDPROC: i32 = -4;
+            let prev = SetWindowLongW(slint_hwnd, GWL_WNDPROC, slint_main_wnd_proc as *const () as isize as i32);
+            *SLINT_PREV_WNDPROC.lock().unwrap() = prev as isize;
+
+            if settings.ui.start_fullscreen {
+                app.window().set_fullscreen(true);
+            } else if settings.ui.start_maximized {
+                app.window().set_maximized(true);
+                ShowWindow(slint_hwnd, SW_MAXIMIZE);
+            }
+        }
+    }
+
+    let app_weak_max = app.as_weak();
+    slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
+        if let Some(ui) = app_weak_max.upgrade() {
+            let s = state::load_settings();
+            let hwnd = get_slint_hwnd(&ui.window());
+            if !hwnd.is_null() {
+                apply_app_icon(hwnd);
+                unsafe {
+                    use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_MAXIMIZE};
+                    if s.ui.start_fullscreen {
+                        ui.window().set_fullscreen(true);
+                    } else if s.ui.start_maximized {
+                        ui.window().set_maximized(true);
+                        ShowWindow(hwnd, SW_MAXIMIZE);
+                    }
+                }
+            }
+            refresh_all_home_slices(&ui);
+        }
+    });
+
+    let app_weak_fs_handler = app.as_weak();
+    *FULLSCREEN_HANDLER.lock().unwrap() = Some(Box::new(move || {
+        if let Some(ui) = app_weak_fs_handler.upgrade() {
+            let next_fs = !ui.window().is_fullscreen();
+            ui.window().set_fullscreen(next_fs);
+            ui.set_is_fullscreen(next_fs);
+            schedule_layout_resync(app_weak_fs_handler.clone());
+        }
+    }));
+
     // 1. Search callback (Dedicated SearchView)
     let app_weak = app.as_weak();
     app.on_search_submitted(move |query| {
@@ -875,16 +1246,60 @@ pub fn run_app() -> Result<(), String> {
         }
     });
 
-    // 3. Quick Dev Setup: registers Cinemeta + Torrentio and fetches Multi-Row Catalog
-    let app_weak = app.as_weak();
-    app.on_quick_dev_setup(move || {
-        let app_weak2 = app_weak.clone();
-        let _ = state::setup_dev_default_addons();
-        if let Some(ui) = app_weak.upgrade() {
-            refresh_library(&ui);
-            refresh_settings(&ui);
-        }
+    // Reload Home Catalog
+    let app_weak_rel = app.as_weak();
+    app.on_reload_home_catalog(move || {
+        let app_weak2 = app_weak_rel.clone();
         load_multi_row_home_catalog(app_weak2);
+    });
+
+    // Player Details Toggle
+    let app_weak_det = app.as_weak();
+    app.on_player_toggle_details(move || {
+        if let Some(ui) = app_weak_det.upgrade() {
+            let cur = ui.get_player_show_details();
+            ui.set_player_show_details(!cur);
+        }
+    });
+
+    // Open Logs Folder
+    app.on_open_logs_folder(|| {
+        let logs_dir = state::get_logs_dir();
+        let logs_wide: Vec<u16> = logs_dir.to_string_lossy().encode_utf16().chain(std::iter::once(0)).collect();
+        let open_wide: Vec<u16> = "open\0".encode_utf16().collect();
+        unsafe {
+            windows_sys::Win32::UI::Shell::ShellExecuteW(
+                std::ptr::null_mut(),
+                open_wide.as_ptr(),
+                logs_wide.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
+            );
+        }
+    });
+
+    // Copy Diagnostics
+    let app_weak_diag = app.as_weak();
+    app.on_copy_diagnostics(move || {
+        let diag = logger::get_system_diagnostic_summary();
+        let recent = logger::get_recent_logs().join("\n");
+        let full = format!("{}\nRecent Logs:\n{}", diag, recent);
+        copy_text_to_clipboard(&full);
+        if let Some(ui) = app_weak_diag.upgrade() {
+            ui.set_status_text("Diagnostics copied to clipboard.".into());
+        }
+    });
+
+    // Dismiss Crash Report
+    let app_weak_dcr = app.as_weak();
+    app.on_dismiss_crash_report(move || {
+        let crash_file = state::get_logs_dir().join("crash.log");
+        let _ = std::fs::remove_file(crash_file);
+        if let Some(ui) = app_weak_dcr.upgrade() {
+            ui.set_has_crash_report(false);
+            ui.set_status_text("Crash report dismissed.".into());
+        }
     });
 
     // Clear Watch History
@@ -1083,6 +1498,7 @@ pub fn run_app() -> Result<(), String> {
         state::save_settings(&s);
         if let Some(ui) = app_weak_cs.upgrade() {
             ui.set_settings_card_size(sz);
+            refresh_all_home_slices(&ui);
         }
     });
 
@@ -1100,6 +1516,7 @@ pub fn run_app() -> Result<(), String> {
                 10 => ui.get_search_movie_results(),
                 11 => ui.get_search_series_results(),
                 20 => ui.get_library_items(),
+                99 => ui.get_home_continue_watching(),
                 _ => return,
             };
 
@@ -1129,6 +1546,7 @@ pub fn run_app() -> Result<(), String> {
                                         10 => u.get_search_movie_results(),
                                         11 => u.get_search_series_results(),
                                         20 => u.get_library_items(),
+                                        99 => u.get_home_continue_watching(),
                                         _ => return,
                                     };
                                     if let Some(mut cur) = m.row_data(idx) {
@@ -1442,6 +1860,8 @@ pub fn run_app() -> Result<(), String> {
             let (ui_detail_id, ui_detail_type, ui_season, ui_episode) = if let Some(ui) = app_weak.upgrade() {
                 ui.set_current_view(2); // Switch directly to Player view!
                 ui.set_is_player_loading(true);
+                ui.set_player_has_error(false);
+                ui.set_player_error_msg("".into());
                 ui.set_player_title(stream.display_title.clone().into());
                 ui.set_player_status_msg("Connecting to swarm & resolving metadata...".into());
                 ui.set_player_peers_str("0 peers".into());
@@ -1460,11 +1880,12 @@ pub fn run_app() -> Result<(), String> {
 
             // Record watch progress in persistent watch history
             if !ui_detail_id.is_empty() {
+                let poster_url = cache_get(&ui_detail_id).and_then(|m| m.poster);
                 state::record_watch_progress(
                     &ui_detail_id,
                     &ui_detail_type,
                     &stream.display_title,
-                    None,
+                    poster_url.as_deref(),
                     if ui_detail_type == "series" { Some(ui_season) } else { None },
                     if ui_detail_type == "series" { Some(ui_episode) } else { None },
                     0,
@@ -1570,7 +1991,9 @@ pub fn run_app() -> Result<(), String> {
 
                         let _ = slint::invoke_from_event_loop(move || {
                             if let Some(ui) = app_weak2.upgrade() {
-                                ui.set_is_player_loading(false);
+                                engine::record_stream_event("Initializing hardware video decoder...");
+                                ui.set_player_loading_stage(6);
+                                ui.set_player_status_msg("Initializing hardware-accelerated video decoder...".into());
                                 let v_hwnd = ensure_video_hwnd(&ui.window());
                                 let slint_hwnd = get_slint_hwnd(&ui.window());
 
@@ -1589,10 +2012,11 @@ pub fn run_app() -> Result<(), String> {
 
                                 match player::init_embedded_player(v_hwnd, &proxy_url) {
                                     Ok(()) => {
-                                        player::update_video_position(0, 0, w, h);
+                                        sync_player_layout(&ui.window());
                                         // Player Overlay: launch owned borderless WS_CHILD overlay with SetWindowRgn
                                         match crate::ui::overlay::ensure_overlay(slint_hwnd, 0, 0, w, h) {
                                             Ok(overlay) => {
+                                                sync_player_layout(&ui.window());
                                                 let ov_hwnd = crate::ui::overlay::get_overlay_hwnd();
                                                 if !v_hwnd.is_null() && !ov_hwnd.is_null() {
                                                     unsafe {
@@ -1619,7 +2043,9 @@ pub fn run_app() -> Result<(), String> {
                                                 overlay.set_volume_percent((player::get_volume() * 100.0) as i32);
                                                 overlay.set_is_muted(player::get_muted());
                                                 overlay.set_sub_delay_ms(subtitles::get_subtitle_delay_ms() as i32);
-                                                overlay.set_sub_size(1);
+                                                let sub_sz = state::load_settings().playback.subtitle_size_pct;
+                                                overlay.set_sub_size(sub_sz);
+                                                crate::ui::overlay::set_overlay_sub_size(sub_sz);
                                                 overlay.set_subtitles_enabled(true);
                                                 let cur_seek = state::load_settings().playback.seek_step_s as i32;
                                                 overlay.set_seek_step_s(cur_seek);
@@ -1864,7 +2290,17 @@ pub fn run_app() -> Result<(), String> {
                                         }
                                     }
                                     Err(e) => {
-                                        ui.set_player_status_msg(format!("Player Error: {}", e).into());
+                                        ui.set_is_player_loading(true);
+                                        let err_str = e.to_string();
+                                        let friendly = if err_str.contains("0xc00d36c4") || err_str.contains("0xC00D36C4") || err_str.contains("unsupported") {
+                                            "This video format or codec is not supported by Windows RT Media Foundation hardware decoders (0xC00D36C4). Try streaming via external VLC."
+                                        } else {
+                                            &format!("Player Error: {}", err_str)
+                                        };
+                                        ui.set_player_has_error(true);
+                                        ui.set_player_error_msg(friendly.into());
+                                        ui.set_player_status_msg(friendly.into());
+                                        log_err(&format!("Embedded player initialization error: {}", e));
                                     }
                                 }
                             }
@@ -1874,6 +2310,9 @@ pub fn run_app() -> Result<(), String> {
                         log_err(&format!("Torrent engine stream failed: {}", e));
                         let _ = slint::invoke_from_event_loop(move || {
                             if let Some(ui) = app_weak2.upgrade() {
+                                ui.set_is_player_loading(true);
+                                ui.set_player_has_error(true);
+                                ui.set_player_error_msg(format!("Torrent engine stream failed: {}", e).into());
                                 ui.set_player_status_msg(format!("Error: {}", e).into());
                             }
                         });
@@ -1914,6 +2353,8 @@ pub fn run_app() -> Result<(), String> {
             let prev = PAGE_STACK.lock().unwrap().pop().unwrap_or(0);
             ui.set_current_view(prev);
             ui.set_is_player_loading(false);
+            ui.set_player_has_error(false);
+            ui.set_player_error_msg("".into());
             refresh_library(&ui);
         }
     });
@@ -2094,8 +2535,22 @@ pub fn run_app() -> Result<(), String> {
         std::time::Duration::from_millis(250),
         move || {
             if let Some(ui) = app_weak.upgrade() {
-                // Hero banner auto-rotation (every 10s if on Home view and reduce_animations is false)
+                // Hero banner auto-rotation and responsive home cards recalculation
                 if ui.get_current_view() == 0 {
+                    let slint_hwnd = get_slint_hwnd(&ui.window());
+                    if !slint_hwnd.is_null() {
+                        unsafe {
+                            let mut rc: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
+                            windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect(slint_hwnd, &mut rc);
+                            let cur_w = (rc.right - rc.left).max(100);
+                            static LAST_HOME_WIDTH: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+                            let prev_w = LAST_HOME_WIDTH.swap(cur_w, std::sync::atomic::Ordering::Relaxed);
+                            if prev_w != 0 && (cur_w - prev_w).abs() > 30 {
+                                refresh_all_home_slices(&ui);
+                            }
+                        }
+                    }
+
                     hero_rotate_ticks += 1;
                     if hero_rotate_ticks >= 40 {
                         hero_rotate_ticks = 0;
@@ -2110,16 +2565,35 @@ pub fn run_app() -> Result<(), String> {
 
                 // Update stream loading telemetry
                 let stream_status = engine::get_stream_status();
-                if stream_status.is_loading && ui.get_current_view() == 2 {
-                    ui.set_is_player_loading(true);
-                    ui.set_player_status_msg(stream_status.message.into());
-                    ui.set_player_peers_str(format!("{} peers", stream_status.peers).into());
-                    ui.set_player_speed_str(format!("{:.1} KB/s", stream_status.speed_kbs).into());
-                    ui.set_player_progress_str(format!(
-                        "{:.2} MB ({}s / 60s)",
-                        stream_status.progress_mb, stream_status.elapsed_secs
-                    ).into());
-                    ui.set_player_progress_val(stream_status.progress_ratio);
+                if ui.get_current_view() == 2 {
+                    let st = player::get_player_state();
+                    let (_, _, progress) = player::get_playback_progress();
+                    if stream_status.is_loading {
+                        if st == 2 || progress > 0.005 {
+                            engine::finish_stream_loading();
+                            ui.set_is_player_loading(false);
+                            sync_player_layout(&ui.window());
+                        } else {
+                            ui.set_is_player_loading(true);
+                            ui.set_player_loading_stage(stream_status.stage as i32);
+                            ui.set_player_status_msg(stream_status.message.into());
+                            ui.set_player_peers_str(format!("{} peers", stream_status.peers).into());
+                            ui.set_player_speed_str(format!("{:.1} KB/s", stream_status.speed_kbs).into());
+                            ui.set_player_progress_str(format!(
+                                "{:.2} MB ({}s / 60s)",
+                                stream_status.progress_mb, stream_status.elapsed_secs
+                            ).into());
+                            ui.set_player_progress_val(stream_status.progress_ratio);
+                            ui.set_player_has_hint(stream_status.has_hint);
+                            ui.set_player_hint_msg(stream_status.hint_message.into());
+                            let ev_items: Vec<SharedString> = stream_status
+                                .events
+                                .into_iter()
+                                .map(SharedString::from)
+                                .collect();
+                            ui.set_player_loading_events(ModelRc::from(Rc::new(VecModel::from(ev_items))));
+                        }
+                    }
                 }
 
                 let slint_hwnd = get_slint_hwnd(&ui.window());
@@ -2177,19 +2651,10 @@ pub fn run_app() -> Result<(), String> {
                         };
                         log_player(&format!("MFPlay State Changed -> {} (State ID: {})", state_name, st));
 
-                        // Whenever the player transitions into active playback, update video position
+                        // Whenever the player transitions into active playback, sync layout
                         // to ensure EVR renders the first frame immediately without needing a manual window resize
                         if st >= 1 && st <= 3 {
-                            let slint_hwnd = get_slint_hwnd(&ui.window());
-                            if !slint_hwnd.is_null() {
-                                unsafe {
-                                    let mut rc: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
-                                    windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect(slint_hwnd, &mut rc);
-                                    let w = (rc.right - rc.left).max(100);
-                                    let h = (rc.bottom - rc.top).max(100);
-                                    player::update_video_position(0, 0, w, h);
-                                }
-                            }
+                            sync_player_layout(&ui.window());
                         }
                     }
 
@@ -2237,11 +2702,12 @@ pub fn run_app() -> Result<(), String> {
                             let title = ui.get_detail_title().to_string();
                             let s = ui.get_selected_season();
                             let e = ui.get_selected_episode();
+                            let poster_url = cache_get(&meta_id).and_then(|m| m.poster);
                             state::record_watch_progress(
                                 &meta_id,
                                 &itype,
                                 &title,
-                                None,
+                                poster_url.as_deref(),
                                 if itype == "series" { Some(s as u32) } else { None },
                                 if itype == "series" { Some(e as u32) } else { None },
                                 pos_ms / 1000,

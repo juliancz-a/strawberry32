@@ -150,8 +150,8 @@ fn serve_meta_json(client: &mut TcpStream, torrent_id: usize, file_idx: usize) -
 }
 
 fn handle_client(mut client: TcpStream) -> Result<(), String> {
-    let _ = client.set_read_timeout(Some(Duration::from_secs(15)));
-    let _ = client.set_write_timeout(Some(Duration::from_secs(30)));
+    let _ = client.set_read_timeout(Some(Duration::from_secs(60)));
+    let _ = client.set_write_timeout(Some(Duration::from_secs(60)));
     let _ = client.set_nodelay(true);
 
     let mut req_buf = [0u8; 4096];
@@ -207,14 +207,19 @@ fn handle_client(mut client: TcpStream) -> Result<(), String> {
         torrent_id, file_idx
     );
 
-    let is_primary_stream = range_header.is_none() || range_header.as_deref() == Some("bytes=0-") || start_ms > 0 || start_pct > 0.0;
-    let my_gen = if is_primary_stream {
-        bump_stream_generation()
+    let (start, end, is_partial) = if let Some(ref r) = range_header {
+        parse_http_range(r, file_len)
     } else {
-        STREAM_GEN_ID.load(Ordering::Relaxed)
+        (0, file_len.saturating_sub(1), false)
     };
 
     if is_mkv {
+        let is_primary_stream = range_header.is_none() || start == 0 || start_ms > 0 || start_pct > 0.0;
+        let my_gen = if is_primary_stream {
+            bump_stream_generation()
+        } else {
+            STREAM_GEN_ID.load(Ordering::Relaxed)
+        };
         log_torrent(&format!(
             "[PROXY] Detectado contenedor MKV ('{}') -> Iniciando Remux en vivo MKV a fMP4 para Media Foundation (gen: {}, start: {} ms, pct: {:.4})",
             file_name, my_gen, start_ms, start_pct
@@ -222,13 +227,9 @@ fn handle_client(mut client: TcpStream) -> Result<(), String> {
         return serve_mkv_as_fmp4(&mut client, method, &upstream_url, start_ms, start_pct, torrent_id, file_idx, file_len, my_gen);
     }
 
-    // --- FLUJO NATIVO MP4 (Sin truncamiento de 4MB que rompía Media Foundation) ---
-    let (start, end, is_partial) = if let Some(ref r) = range_header {
-        parse_http_range(r, file_len)
-    } else {
-        (0, file_len.saturating_sub(1), false)
-    };
+    let my_gen = STREAM_GEN_ID.load(Ordering::Relaxed);
 
+    // --- FLUJO NATIVO MP4 (Sin truncamiento de 4MB que rompía Media Foundation) ---
     let content_len = if file_len > 0 && end >= start {
         end - start + 1
     } else {
@@ -318,7 +319,7 @@ fn handle_client(mut client: TcpStream) -> Result<(), String> {
     };
     let mut buf = [0u8; 32768];
     loop {
-        if STREAM_GEN_ID.load(Ordering::Relaxed) != my_gen {
+        if STREAM_GEN_ID.load(Ordering::Relaxed) > my_gen {
             break;
         }
         match reader.read(&mut buf) {

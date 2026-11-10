@@ -273,7 +273,10 @@ export component SettingsView inherits Rectangle {
 
     callback tab_changed(int);
     callback install_addon_clicked(string);
-    callback quick_setup_clicked();
+    in-out property <bool> has_crash_report: false;
+    callback copy_diagnostics_clicked();
+    callback open_logs_clicked();
+    callback dismiss_crash_clicked();
     callback toggle_addon_clicked(string);
     callback remove_addon_clicked(string);
     callback priority_addon_clicked(string, bool);
@@ -419,13 +422,6 @@ export component SettingsView inherits Rectangle {
                                     is_accent: true;
                                     clicked => {
                                         root.install_addon_clicked(root.install_url_input);
-                                    }
-                                }
-
-                                SettingsButton {
-                                    text: "Quick Setup";
-                                    clicked => {
-                                        root.quick_setup_clicked();
                                     }
                                 }
                             }
@@ -718,6 +714,39 @@ export component SettingsView inherits Rectangle {
                             color: Theme.text;
                         }
 
+                        if root.has_crash_report : Rectangle {
+                            background: #2b1717;
+                            border-radius: 6px;
+                            border-width: 1px;
+                            border-color: #8b0000;
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 8px;
+                                Text {
+                                    text: "⚠ The previous session ended unexpectedly. A diagnostic crash report was recorded.";
+                                    font-size: 13px;
+                                    font-weight: 700;
+                                    color: #ff6b6b;
+                                }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    SettingsButton {
+                                        text: "Open Logs Folder";
+                                        is_accent: true;
+                                        clicked => { root.open_logs_clicked(); }
+                                    }
+                                    SettingsButton {
+                                        text: "Copy Diagnostics";
+                                        clicked => { root.copy_diagnostics_clicked(); }
+                                    }
+                                    SettingsButton {
+                                        text: "Dismiss";
+                                        clicked => { root.dismiss_crash_clicked(); }
+                                    }
+                                }
+                            }
+                        }
+
                         Rectangle {
                             background: Theme.surface-raised;
                             border-radius: 6px;
@@ -748,9 +777,20 @@ export component SettingsView inherits Rectangle {
                                 color: Theme.accent;
                                 vertical-alignment: center;
                             }
-                            SettingsButton {
-                                text: "Clear Logs";
-                                clicked => { root.clear_logs_clicked(); }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                SettingsButton {
+                                    text: "Open Folder";
+                                    clicked => { root.open_logs_clicked(); }
+                                }
+                                SettingsButton {
+                                    text: "Copy";
+                                    clicked => { root.copy_diagnostics_clicked(); }
+                                }
+                                SettingsButton {
+                                    text: "Clear Logs";
+                                    clicked => { root.clear_logs_clicked(); }
+                                }
                             }
                         }
 
@@ -813,6 +853,22 @@ export component SettingsView inherits Rectangle {
                                     text: "Key Technologies & Optimizations:\n• Pure Rust streaming engine (librqbit 8.0) with BEP 15 tracker RTT probing\n• MP4 moov & MKV Cues metadata inspector with frame-accurate OpenSubtitles videoHash\n• Media Foundation IMFMediaEngine hardware DXVA2 H.264 decoding\n• Slint pure-software software renderer with Win32 SetWindowRgn zero-overhead overlay\n• Protected LRU disk cache cleaner with configurable 4 GB budget";
                                     font-size: 12px;
                                     color: Theme.text;
+                                    wrap: word-wrap;
+                                }
+
+                                Rectangle { height: 4px; }
+
+                                Text {
+                                    text: "Legal & Compliance Notice:\nStrawberry32 is an open-source media player and frontend. It does not host, index, scrape, or distribute any media content or torrent files. All media streams are resolved exclusively via user-installed third-party add-ons. Users are solely responsible for ensuring compliance with applicable copyright and local laws.";
+                                    font-size: 11px;
+                                    color: Theme.text-muted;
+                                    wrap: word-wrap;
+                                }
+
+                                Text {
+                                    text: "Licensing & Third-Party Credits:\nStrawberry32 is licensed under the GNU General Public License v3.0 (GPL-3.0-or-later). Built with Rust and Slint (GPLv3). Includes pure-Rust BitTorrent engine librqbit (Apache-2.0) and uses Stremio Cinemeta public API for modular metadata.";
+                                    font-size: 11px;
+                                    color: Theme.text-faint;
                                     wrap: word-wrap;
                                 }
 

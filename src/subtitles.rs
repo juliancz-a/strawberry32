@@ -1,6 +1,7 @@
 use crate::logger::{log_err, log_info};
 use crate::state::SubtitleTrack;
 use serde::Deserialize;
+use std::io::Read;
 use std::sync::Mutex;
 
 #[derive(Clone, Debug)]
@@ -378,10 +379,13 @@ pub fn fetch_subtitle_tracks(
 pub fn download_and_parse_subtitle(url: &str) -> Result<Vec<SubtitleEntry>, String> {
     log_info(&format!("Downloading subtitle: {}", url));
 
-    let client = crate::addons::create_agent()?;
+    let client = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(5))
+        .timeout_read(std::time::Duration::from_secs(8))
+        .build();
     let resp = client.get(url).call().map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
-    resp.into_reader()
+    std::io::Read::take(resp.into_reader(), 2_000_000)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
 

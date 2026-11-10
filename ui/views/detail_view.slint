@@ -236,6 +236,8 @@ export component DetailView inherits Rectangle {
     callback stream_filter_res_changed(string);
     callback stream_sort_by_changed(string);
     callback stream_sort_order_toggled(bool);
+    callback open_addons_clicked();
+    callback retry_streams_clicked();
 
     background: Theme.bg;
 
@@ -896,7 +898,7 @@ export component DetailView inherits Rectangle {
                     background: Theme.surface;
                     border-radius: 6px;
                     Text {
-                        text: "Querying Torrentio for compatible streams...";
+                        text: "Querying installed stream add-ons for compatible streams...";
                         font-size: 14px;
                         color: Theme.text-muted;
                         horizontal-alignment: center;
@@ -906,15 +908,63 @@ export component DetailView inherits Rectangle {
 
                 // Empty State
                 if !root.is_streams_loading && root.stream_items.length == 0 : Rectangle {
-                    height: 80px;
+                    min-height: 96px;
                     background: Theme.surface;
                     border-radius: 6px;
-                    Text {
-                        text: "No compatible H.264 streams found for this title.";
-                        font-size: 14px;
-                        color: Theme.danger-text;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 8px;
+                        padding: 12px;
+                        Text {
+                            text: "No compatible H.264 streams found for this title.";
+                            font-size: 14px;
+                            color: Theme.text-muted;
+                            horizontal-alignment: center;
+                        }
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 10px;
+                            Rectangle {
+                                width: 140px;
+                                height: 32px;
+                                border-radius: 4px;
+                                background: Theme.accent;
+                                TouchArea {
+                                    width: 100%;
+                                    height: 100%;
+                                    mouse-cursor: pointer;
+                                    clicked => { root.open_addons_clicked(); }
+                                }
+                                Text {
+                                    text: "Manage Add-ons";
+                                    font-size: 12px;
+                                    font-weight: 700;
+                                    color: #ffffff;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            Rectangle {
+                                width: 90px;
+                                height: 32px;
+                                border-radius: 4px;
+                                background: #25262c;
+                                TouchArea {
+                                    width: 100%;
+                                    height: 100%;
+                                    mouse-cursor: pointer;
+                                    clicked => { root.retry_streams_clicked(); }
+                                }
+                                Text {
+                                    text: "Retry";
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    color: #ffffff;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
                     }
                 }
 

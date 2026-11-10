@@ -225,12 +225,17 @@ pub fn tick(owner: HWND, text: &str, mode: i32) {
 }
 
 fn font_px_for(client_h: i32, mode: i32) -> i32 {
-    let scale = match mode {
-        0 => 0.036,
-        2 => 0.056,
-        _ => 0.045,
+    let pct = if mode <= 2 {
+        match mode {
+            0 => 80,
+            2 => 125,
+            _ => 100,
+        }
+    } else {
+        mode.clamp(50, 200)
     };
-    ((client_h as f32 * scale) as i32).clamp(16, 72)
+    let scale = 0.045 * (pct as f32 / 100.0);
+    ((client_h as f32 * scale) as i32).clamp(10, 96)
 }
 
 /// Pixel offsets (dx, dy, weight 0..=255) of a soft-edged disc used to dilate the glyph coverage
@@ -253,7 +258,7 @@ fn disc_kernel(radius: i32) -> Vec<(i32, i32, u32)> {
 /// Renders the subtitle bitmap and pushes it to the layered window. Returns false on failure.
 fn present(hwnd: HWND, key: &RenderKey) -> bool {
     let font_px = font_px_for(key.client_h, key.mode);
-    let outline_r = (font_px / 9).max(2);
+    let outline_r = (font_px / 9).max(1);
     let margin = outline_r + 2;
 
     let wide: Vec<u16> = key.text.encode_utf16().collect();

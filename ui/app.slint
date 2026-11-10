@@ -13,10 +13,10 @@ import { ScrollView } from "std-widgets.slint";
 export { Theme, PlayerOverlay, CatalogItem, StreamItem, EpisodeItem, AddonItem }
 
 export component MainWindow inherits Window {
-    preferred-width: 960px;
-    preferred-height: 640px;
-    min-width: 640px;
-    min-height: 480px;
+    preferred-width: 1280px;
+    preferred-height: 720px;
+    min-width: 860px;
+    min-height: 560px;
     title: "Strawberry32 - Surface RT (ARM32)";
     icon: @image-url("icons/brand/strawberry32-icon-color.svg");
     background: Theme.bg;
@@ -28,7 +28,11 @@ export component MainWindow inherits Window {
     in-out property <int> current_view: 0;
 
     // Top Bar / Status
-    in-out property <string> status_text: "Ready. Click Quick Setup or Search.";
+    in-out property <string> status_text: "Ready. Browse featured titles or search.";
+
+    // Continue Watching Model
+    in-out property <bool> has_continue_watching: false;
+    in-out property <[CatalogItem]> home_continue_watching: [];
 
     // Hero Model
     in-out property <string> hero_title: "Featured Title";
@@ -100,6 +104,11 @@ export component MainWindow inherits Window {
 
     // Player View Model
     in-out property <bool> is_player_loading: false;
+    in-out property <int> player_loading_stage: 1; // 1=Peers, 2=Meta, 3=Container, 4=Index, 5=Buffering, 6=Decoder, 7=Ready
+    in-out property <bool> player_show_details: false;
+    in-out property <[string]> player_loading_events: [];
+    in-out property <bool> player_has_hint: false;
+    in-out property <string> player_hint_msg: "";
     in-out property <string> player_title: "";
     in-out property <string> player_status_msg: "";
     in-out property <string> player_peers_str: "";
@@ -111,9 +120,12 @@ export component MainWindow inherits Window {
     in-out property <bool> is_paused: false;
     in-out property <bool> is_fullscreen: false;
     in-out property <bool> overlay_failed: false;
+    in-out property <bool> player_has_error: false;
+    in-out property <string> player_error_msg: "";
 
-    // Diagnostic Logs
+    // Diagnostic Logs & Crash Reporting
     in-out property <[string]> log_lines: [];
+    in-out property <bool> has_crash_report: false;
 
     // Settings Model
     in-out property <int> settings_active_tab: 0;
@@ -153,7 +165,11 @@ export component MainWindow inherits Window {
     callback detail_stream_filter_res(string);
     callback detail_stream_sort_by(string);
     callback detail_stream_sort_order(bool);
-    callback quick_dev_setup();
+    callback reload_home_catalog();
+    callback player_toggle_details();
+    callback open_logs_folder();
+    callback copy_diagnostics();
+    callback dismiss_crash_report();
     callback clear_logs();
     callback clear_watch_history();
 
@@ -280,6 +296,19 @@ export component MainWindow inherits Window {
                                 }
                             }
 
+                            // Continue Watching Row (Phase D feature)
+                            if !root.is_catalog_loading && root.has_continue_watching && root.home_continue_watching.length > 0 : CatalogRow {
+                                title: "▶ Continue Watching";
+                                items: root.home_continue_watching;
+                                row_index: 99;
+                                card_size: root.settings_card_size;
+                                page_indicator: "";
+                                card_clicked(id, type) => { root.card_selected(id, type); }
+                                request_lazy_range(row, start, end) => { root.request_lazy_range(row, start, end); }
+                                prev_page(row) => {}
+                                next_page(row) => {}
+                            }
+
                             // Empty State
                             if !root.is_catalog_loading && root.home_row1.length == 0 : Rectangle {
                                 height: 160px;
@@ -289,8 +318,8 @@ export component MainWindow inherits Window {
                                     alignment: center;
                                     spacing: 12px;
                                     Text {
-                                        text: "No titles loaded yet.";
-                                        font-size: 18px;
+                                        text: "Featured Cinemeta catalogs loading or not available.";
+                                        font-size: 16px;
                                         font-weight: 700;
                                         color: Theme.text;
                                         horizontal-alignment: center;
@@ -298,20 +327,20 @@ export component MainWindow inherits Window {
                                     HorizontalLayout {
                                         alignment: center;
                                         Rectangle {
-                                            width: 260px;
-                                            height: 38px;
+                                            width: 180px;
+                                            height: 36px;
                                             background: qk_touch.pressed ? Theme.accent-pressed : (qk_touch.has-hover ? #ff709e : Theme.accent);
                                             border-radius: 6px;
                                             qk_touch := TouchArea {
                                                 width: 100%;
                                                 height: 100%;
                                                 mouse-cursor: pointer;
-                                                clicked => { root.quick_dev_setup(); }
+                                                clicked => { root.reload_home_catalog(); }
                                             }
                                             HorizontalLayout {
                                                 alignment: center;
                                                 Text {
-                                                    text: "⚡ Click to Load Quick Setup Catalog";
+                                                    text: "Reload Catalogs";
                                                     font-size: 13px;
                                                     font-weight: 700;
                                                     color: #ffffff;
@@ -451,6 +480,13 @@ export component MainWindow inherits Window {
                     stream_sort_order_toggled(asc) => {
                         root.detail_stream_sort_asc = asc;
                         root.detail_stream_sort_order(asc);
+                    }
+                    open_addons_clicked => {
+                        root.current_view = 5;
+                        root.settings_active_tab = 0;
+                    }
+                    retry_streams_clicked => {
+                        root.fetch_episode_streams(root.detail_id, root.selected_season, root.selected_episode);
                     }
                     play_best_match => {
                         if (root.stream_items.length > 0) {
@@ -627,34 +663,208 @@ export component MainWindow inherits Window {
 
                             Rectangle { height: 6px; }
 
-                            // 320x4px Accent Progress Bar (Centered)
+                            // Stage Checklist (Phase B #7)
+                            HorizontalLayout {
+                                alignment: center;
+                                spacing: 6px;
+
+                                // 1. Peers
+                                Rectangle {
+                                    height: 22px;
+                                    border-radius: 11px;
+                                    background: root.player_loading_stage >= 1 ? #25262e : #141418;
+                                    border-width: 1px;
+                                    border-color: root.player_loading_stage == 1 ? Theme.accent : (root.player_loading_stage > 1 ? #3a3b45 : #1e1f26);
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+                                        spacing: 4px;
+                                        alignment: center;
+                                        Text {
+                                            text: root.player_loading_stage > 1 ? "✓" : (root.player_loading_stage == 1 ? "●" : "○");
+                                            font-size: 10px;
+                                            color: root.player_loading_stage >= 1 ? Theme.accent : Theme.text-faint;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: "Peers";
+                                            font-size: 11px;
+                                            font-weight: 600;
+                                            color: root.player_loading_stage >= 1 ? #ffffff : Theme.text-muted;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                // 2. Metadata
+                                Rectangle {
+                                    height: 22px;
+                                    border-radius: 11px;
+                                    background: root.player_loading_stage >= 2 ? #25262e : #141418;
+                                    border-width: 1px;
+                                    border-color: root.player_loading_stage == 2 ? Theme.accent : (root.player_loading_stage > 2 ? #3a3b45 : #1e1f26);
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+                                        spacing: 4px;
+                                        alignment: center;
+                                        Text {
+                                            text: root.player_loading_stage > 2 ? "✓" : (root.player_loading_stage == 2 ? "●" : "○");
+                                            font-size: 10px;
+                                            color: root.player_loading_stage >= 2 ? Theme.accent : Theme.text-faint;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: "Meta";
+                                            font-size: 11px;
+                                            font-weight: 600;
+                                            color: root.player_loading_stage >= 2 ? #ffffff : Theme.text-muted;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                // 3. Container
+                                Rectangle {
+                                    height: 22px;
+                                    border-radius: 11px;
+                                    background: root.player_loading_stage >= 3 ? #25262e : #141418;
+                                    border-width: 1px;
+                                    border-color: root.player_loading_stage == 3 ? Theme.accent : (root.player_loading_stage > 3 ? #3a3b45 : #1e1f26);
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+                                        spacing: 4px;
+                                        alignment: center;
+                                        Text {
+                                            text: root.player_loading_stage > 3 ? "✓" : (root.player_loading_stage == 3 ? "●" : "○");
+                                            font-size: 10px;
+                                            color: root.player_loading_stage >= 3 ? Theme.accent : Theme.text-faint;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: "Container";
+                                            font-size: 11px;
+                                            font-weight: 600;
+                                            color: root.player_loading_stage >= 3 ? #ffffff : Theme.text-muted;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                // 4. Index
+                                Rectangle {
+                                    height: 22px;
+                                    border-radius: 11px;
+                                    background: root.player_loading_stage >= 4 ? #25262e : #141418;
+                                    border-width: 1px;
+                                    border-color: root.player_loading_stage == 4 ? Theme.accent : (root.player_loading_stage > 4 ? #3a3b45 : #1e1f26);
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+                                        spacing: 4px;
+                                        alignment: center;
+                                        Text {
+                                            text: root.player_loading_stage > 4 ? "✓" : (root.player_loading_stage == 4 ? "●" : "○");
+                                            font-size: 10px;
+                                            color: root.player_loading_stage >= 4 ? Theme.accent : Theme.text-faint;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: "Index";
+                                            font-size: 11px;
+                                            font-weight: 600;
+                                            color: root.player_loading_stage >= 4 ? #ffffff : Theme.text-muted;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                // 5. Buffer
+                                Rectangle {
+                                    height: 22px;
+                                    border-radius: 11px;
+                                    background: root.player_loading_stage >= 5 ? #25262e : #141418;
+                                    border-width: 1px;
+                                    border-color: root.player_loading_stage == 5 ? Theme.accent : (root.player_loading_stage > 5 ? #3a3b45 : #1e1f26);
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+                                        spacing: 4px;
+                                        alignment: center;
+                                        Text {
+                                            text: root.player_loading_stage > 5 ? "✓" : (root.player_loading_stage == 5 ? "●" : "○");
+                                            font-size: 10px;
+                                            color: root.player_loading_stage >= 5 ? Theme.accent : Theme.text-faint;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: "Buffer";
+                                            font-size: 11px;
+                                            font-weight: 600;
+                                            color: root.player_loading_stage >= 5 ? #ffffff : Theme.text-muted;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                // 6. Decoder
+                                Rectangle {
+                                    height: 22px;
+                                    border-radius: 11px;
+                                    background: root.player_loading_stage >= 6 ? #25262e : #141418;
+                                    border-width: 1px;
+                                    border-color: root.player_loading_stage == 6 ? Theme.accent : (root.player_loading_stage > 6 ? #3a3b45 : #1e1f26);
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+                                        spacing: 4px;
+                                        alignment: center;
+                                        Text {
+                                            text: root.player_loading_stage > 6 ? "✓" : (root.player_loading_stage == 6 ? "●" : "○");
+                                            font-size: 10px;
+                                            color: root.player_loading_stage >= 6 ? Theme.accent : Theme.text-faint;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: "Decoder";
+                                            font-size: 11px;
+                                            font-weight: 600;
+                                            color: root.player_loading_stage >= 6 ? #ffffff : Theme.text-muted;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Truthful Weighted Progress Bar
                             HorizontalLayout {
                                 alignment: center;
                                 Rectangle {
-                                    width: 320px;
-                                    height: 4px;
+                                    width: 380px;
+                                    height: 5px;
                                     background: #23232a;
-                                    border-radius: 2px;
+                                    border-radius: 2.5px;
                                     clip: true;
 
                                     Rectangle {
                                         x: 0px;
                                         y: 0px;
                                         height: 100%;
-                                        width: (root.player_progress_val > 0.0 ? root.player_progress_val : 0.35) * parent.width;
+                                        width: max(0.02, min(1.0, root.player_progress_val)) * parent.width;
                                         background: Theme.accent;
-                                        border-radius: 2px;
+                                        border-radius: 2.5px;
                                     }
                                 }
                             }
 
-                            // Single-line telemetry string right beneath the bar (Centered)
+                            // Telemetry line (peers • speed • progress • ETA)
                             HorizontalLayout {
                                 alignment: center;
                                 Text {
                                     text: (root.player_peers_str != "" ? root.player_peers_str : "0 peers") + " • " +
                                           (root.player_speed_str != "" ? root.player_speed_str : "0 KB/s") + " • " +
-                                          (root.player_progress_str != "" ? root.player_progress_str : "0% cached");
+                                          (root.player_progress_str != "" ? root.player_progress_str : "0.0 MB");
                                     font-size: 12px;
                                     font-weight: 500;
                                     color: #a0a0ab;
@@ -662,8 +872,151 @@ export component MainWindow inherits Window {
                                 }
                             }
 
-                            // Console-like informative loading status (Centered)
-                            HorizontalLayout {
+                            // Smart hint banner when few peers detected after 15s
+                            if root.player_has_hint : HorizontalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    background: #261b16;
+                                    border-radius: 6px;
+                                    border-width: 1px;
+                                    border-color: #854d0e;
+                                    height: 32px;
+                                    HorizontalLayout {
+                                        padding-left: 12px;
+                                        padding-right: 12px;
+                                        spacing: 10px;
+                                        alignment: center;
+                                        Text {
+                                            text: "⚠ " + (root.player_hint_msg != "" ? root.player_hint_msg : "Few peers detected. Try another source.");
+                                            font-size: 11px;
+                                            font-weight: 600;
+                                            color: #fbbf24;
+                                            vertical-alignment: center;
+                                        }
+                                        Rectangle {
+                                            width: 90px;
+                                            height: 22px;
+                                            border-radius: 4px;
+                                            background: hint_btn.pressed ? #a16207 : #ca8a04;
+                                            hint_btn := TouchArea {
+                                                width: 100%;
+                                                height: 100%;
+                                                mouse-cursor: pointer;
+                                                clicked => { root.player_back(); }
+                                            }
+                                            Text {
+                                                text: "Pick Stream";
+                                                font-size: 11px;
+                                                font-weight: 700;
+                                                color: #ffffff;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Dedicated Error Card when stream playback or decoder fails
+                            if root.player_has_error : HorizontalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    background: #231215;
+                                    border-radius: 8px;
+                                    border-width: 1px;
+                                    border-color: #ef4444;
+                                    width: min(540px, parent.width - 40px);
+
+                                    VerticalLayout {
+                                        padding-top: 14px;
+                                        padding-bottom: 14px;
+                                        padding-left: 18px;
+                                        padding-right: 18px;
+                                        spacing: 12px;
+                                        alignment: center;
+
+                                        HorizontalLayout {
+                                            spacing: 8px;
+                                            alignment: center;
+                                            Text {
+                                                text: "⚠";
+                                                font-size: 16px;
+                                                color: #ef4444;
+                                                vertical-alignment: center;
+                                            }
+                                            Text {
+                                                text: "Playback / Decoder Error";
+                                                font-size: 15px;
+                                                font-weight: 700;
+                                                color: #ffffff;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+
+                                        Text {
+                                            text: root.player_error_msg != "" ? root.player_error_msg : root.player_status_msg;
+                                            font-size: 12px;
+                                            color: #e2e8f0;
+                                            wrap: word-wrap;
+                                            horizontal-alignment: center;
+                                        }
+
+                                        HorizontalLayout {
+                                            spacing: 12px;
+                                            alignment: center;
+
+                                            // Play in VLC button
+                                            Rectangle {
+                                                width: 150px;
+                                                height: 36px;
+                                                border-radius: 6px;
+                                                background: vlc_err_btn.pressed ? #c2410c : (vlc_err_btn.has-hover ? #f97316 : #ea580c);
+                                                vlc_err_btn := TouchArea {
+                                                    width: 100%;
+                                                    height: 100%;
+                                                    mouse-cursor: pointer;
+                                                    clicked => { root.player_open_vlc(); }
+                                                }
+                                                Text {
+                                                    text: "▶ Play in VLC";
+                                                    font-size: 13px;
+                                                    font-weight: 700;
+                                                    color: #ffffff;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+
+                                            // Back to detail button
+                                            Rectangle {
+                                                width: 120px;
+                                                height: 36px;
+                                                border-radius: 6px;
+                                                background: back_err_btn.pressed ? #33333d : (back_err_btn.has-hover ? #25252c : #18181f);
+                                                border-width: 1px;
+                                                border-color: #3b3b47;
+                                                back_err_btn := TouchArea {
+                                                    width: 100%;
+                                                    height: 100%;
+                                                    mouse-cursor: pointer;
+                                                    clicked => { root.player_back(); }
+                                                }
+                                                Text {
+                                                    text: "← Back";
+                                                    font-size: 13px;
+                                                    font-weight: 600;
+                                                    color: #ffffff;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Informative loading status line
+                            if !root.player_has_error : HorizontalLayout {
                                 alignment: center;
                                 Text {
                                     text: root.player_status_msg != "" ? root.player_status_msg : "Connecting to BitTorrent swarm & probing video container...";
@@ -671,6 +1024,58 @@ export component MainWindow inherits Window {
                                     font-weight: 600;
                                     color: Theme.text;
                                     horizontal-alignment: center;
+                                }
+                            }
+
+                            // Collapsible Details Toggle
+                            HorizontalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 100px;
+                                    height: 24px;
+                                    border-radius: 12px;
+                                    background: det_touch.has-hover ? #25262c : #181920;
+                                    border-width: 1px;
+                                    border-color: #2e3038;
+                                    det_touch := TouchArea {
+                                        width: 100%;
+                                        height: 100%;
+                                        mouse-cursor: pointer;
+                                        clicked => { root.player_toggle_details(); }
+                                    }
+                                    Text {
+                                        text: root.player_show_details ? "Hide Details ▲" : "Show Details ▼";
+                                        font-size: 11px;
+                                        font-weight: 600;
+                                        color: Theme.text-muted;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            // Collapsible Details Log Drawer
+                            if root.player_show_details : HorizontalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 440px;
+                                    height: 96px;
+                                    background: #0d0e12;
+                                    border-radius: 6px;
+                                    border-width: 1px;
+                                    border-color: #24252e;
+                                    clip: true;
+                                    ScrollView {
+                                        VerticalLayout {
+                                            padding: 8px;
+                                            spacing: 2px;
+                                            for ev in root.player_loading_events : Text {
+                                                text: "› " + ev;
+                                                font-size: 10px;
+                                                color: Theme.text-muted;
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -752,9 +1157,13 @@ export component MainWindow inherits Window {
                     storage_path_str: root.settings_storage_path;
                     log_lines: root.log_lines;
 
+                    has_crash_report: root.has_crash_report;
+
                     tab_changed(t) => { root.settings_tab_changed(t); }
                     install_addon_clicked(u) => { root.settings_install_addon(u); }
-                    quick_setup_clicked => { root.quick_dev_setup(); }
+                    open_logs_clicked => { root.open_logs_folder(); }
+                    copy_diagnostics_clicked => { root.copy_diagnostics(); }
+                    dismiss_crash_clicked => { root.dismiss_crash_report(); }
                     toggle_addon_clicked(id) => { root.settings_toggle_addon(id); }
                     remove_addon_clicked(id) => { root.settings_remove_addon(id); }
                     priority_addon_clicked(id, up) => { root.settings_priority_addon(id, up); }

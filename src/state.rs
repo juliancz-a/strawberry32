@@ -314,6 +314,53 @@ pub fn clear_watch_history() {
     save_watch_history(&history);
 }
 
+pub fn get_default_addons_config() -> AddonsConfig {
+    let cinemeta = AddonDescriptor {
+        transport_url: "https://v3-cinemeta.strem.io/manifest.json".to_string(),
+        manifest: Manifest {
+            id: "com.linvo.cinemeta".to_string(),
+            name: "Cinemeta".to_string(),
+            version: "3.0.12".to_string(),
+            description: Some("Official movies and series catalog & metadata".to_string()),
+            types: vec!["movie".to_string(), "series".to_string()],
+            catalogs: vec![
+                ManifestCatalog {
+                    catalog_type: "movie".to_string(),
+                    id: "top".to_string(),
+                    name: Some("Popular Movies".to_string()),
+                },
+                ManifestCatalog {
+                    catalog_type: "series".to_string(),
+                    id: "top".to_string(),
+                    name: Some("Popular Series".to_string()),
+                },
+            ],
+            resources: vec![serde_json::json!("catalog"), serde_json::json!("meta")],
+        },
+        enabled: true,
+        priority: 0,
+    };
+
+    let opensubtitles = AddonDescriptor {
+        transport_url: "https://opensubtitles-v3.strem.io/manifest.json".to_string(),
+        manifest: Manifest {
+            id: "org.stremio.opensubtitlesv3".to_string(),
+            name: "OpenSubtitles v3".to_string(),
+            version: "1.0.0".to_string(),
+            description: Some("Official OpenSubtitles v3 subtitles provider".to_string()),
+            types: vec!["movie".to_string(), "series".to_string()],
+            catalogs: vec![],
+            resources: vec![serde_json::json!("subtitles")],
+        },
+        enabled: true,
+        priority: 1,
+    };
+
+    AddonsConfig {
+        addons: vec![cinemeta, opensubtitles],
+    }
+}
+
 pub fn load_addons_config() -> AddonsConfig {
     let mut guard = ADDONS_CONFIG.lock().unwrap();
     if let Some(cfg) = guard.as_ref() {
@@ -323,11 +370,13 @@ pub fn load_addons_config() -> AddonsConfig {
     let file_path = get_data_dir().join("addons.json");
     let config: AddonsConfig = if file_path.is_file() {
         match fs::read_to_string(&file_path) {
-            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-            Err(_) => AddonsConfig::default(),
+            Ok(content) => serde_json::from_str(&content).unwrap_or_else(|_| get_default_addons_config()),
+            Err(_) => get_default_addons_config(),
         }
     } else {
-        AddonsConfig::default()
+        let def = get_default_addons_config();
+        save_addons_config(&def);
+        def
     };
 
     *guard = Some(config.clone());
@@ -342,6 +391,7 @@ fn default_lang_en() -> String { "en".to_string() }
 fn default_max_height() -> u32 { 720 }
 fn default_seek_step() -> u32 { 15 }
 fn default_volume() -> f32 { 1.0 }
+fn default_sub_size_pct() -> i32 { 100 }
 fn default_max_bytes() -> u64 { 2 * 1024 * 1024 * 1024 } // 2 GB
 fn default_retention_back() -> u64 { 64 * 1024 * 1024 }  // 64 MB
 fn default_lookahead() -> u64 { 48 * 1024 * 1024 }       // 48 MB
@@ -362,6 +412,10 @@ pub struct UiSettings {
     pub hero_autorotate: bool,
     #[serde(default = "default_lang_en")]
     pub language: String,
+    #[serde(default = "default_true")]
+    pub start_maximized: bool,
+    #[serde(default)]
+    pub start_fullscreen: bool,
 }
 
 impl Default for UiSettings {
@@ -372,6 +426,8 @@ impl Default for UiSettings {
             card_size: default_card_size(),
             hero_autorotate: true,
             language: default_lang_en(),
+            start_maximized: true,
+            start_fullscreen: false,
         }
     }
 }
@@ -396,6 +452,8 @@ pub struct PlaybackSettings {
     pub seek_step_s: u32,
     #[serde(default = "default_volume")]
     pub volume: f32,
+    #[serde(default = "default_sub_size_pct")]
+    pub subtitle_size_pct: i32,
 }
 
 impl Default for PlaybackSettings {
@@ -410,6 +468,7 @@ impl Default for PlaybackSettings {
             auto_vlc_fallback: true,
             seek_step_s: default_seek_step(),
             volume: default_volume(),
+            subtitle_size_pct: default_sub_size_pct(),
         }
     }
 }
@@ -579,72 +638,4 @@ pub fn add_or_update_addon(descriptor: AddonDescriptor) {
         .retain(|a| a.manifest.id != descriptor.manifest.id && a.transport_url != descriptor.transport_url);
     cfg.addons.push(descriptor);
     save_addons_config(&cfg);
-}
-
-/// Setup defaults for Cinemeta, Torrentio and OpenSubtitles v3
-pub fn setup_dev_default_addons() -> Result<(AddonDescriptor, AddonDescriptor), String> {
-    log_info("Registering Cinemeta, Torrentio and OpenSubtitles v3 in addons.json...");
-
-    let cinemeta = AddonDescriptor {
-        transport_url: "https://v3-cinemeta.strem.io/manifest.json".to_string(),
-        manifest: Manifest {
-            id: "com.linvo.cinemeta".to_string(),
-            name: "Cinemeta".to_string(),
-            version: "3.0.12".to_string(),
-            description: Some("Official movies and series catalog".to_string()),
-            types: vec!["movie".to_string(), "series".to_string()],
-            catalogs: vec![
-                ManifestCatalog {
-                    catalog_type: "movie".to_string(),
-                    id: "top".to_string(),
-                    name: Some("Popular Movies".to_string()),
-                },
-                ManifestCatalog {
-                    catalog_type: "series".to_string(),
-                    id: "top".to_string(),
-                    name: Some("Popular Series".to_string()),
-                },
-            ],
-            resources: vec![],
-        },
-        enabled: true,
-        priority: 0,
-    };
-
-    let torrentio = AddonDescriptor {
-        transport_url: "https://torrentio.strem.fun/manifest.json".to_string(),
-        manifest: Manifest {
-            id: "com.stremio.torrentio".to_string(),
-            name: "Torrentio".to_string(),
-            version: "1.0.14".to_string(),
-            description: Some("Torrent streams from multiple providers".to_string()),
-            types: vec!["movie".to_string(), "series".to_string()],
-            catalogs: vec![],
-            resources: vec![],
-        },
-        enabled: true,
-        priority: 1,
-    };
-
-    let opensubtitles = AddonDescriptor {
-        transport_url: "https://opensubtitles-v3.strem.io/manifest.json".to_string(),
-        manifest: Manifest {
-            id: "org.stremio.opensubtitlesv3".to_string(),
-            name: "OpenSubtitles v3".to_string(),
-            version: "1.0.0".to_string(),
-            description: Some("Official OpenSubtitles v3 provider for Stremio".to_string()),
-            types: vec!["movie".to_string(), "series".to_string()],
-            catalogs: vec![],
-            resources: vec![serde_json::json!("subtitles")],
-        },
-        enabled: true,
-        priority: 2,
-    };
-
-    add_or_update_addon(cinemeta.clone());
-    add_or_update_addon(torrentio.clone());
-    add_or_update_addon(opensubtitles);
-
-    log_info("Default addons configured successfully.");
-    Ok((cinemeta, torrentio))
 }

@@ -14,13 +14,16 @@ pub const WM_APP_NEW_LOG: u32 = WM_APP + 101;
 /// Thread-safe queue for log lines destined for the Win32 GUI
 static LOG_QUEUE: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 
+/// Ring buffer preserving the last 50 log lines for crash dumps and diagnostics
+static RECENT_LOGS: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
+
 /// Atomic flag preventing Win32 message queue saturation / re-entrancy storms
 static LOG_NOTIFY_PENDING: AtomicBool = AtomicBool::new(false);
 
 /// Win32 main window handle stored atomically
 static GUI_HWND: AtomicIsize = AtomicIsize::new(0);
 
-/// Cached path to %TEMP%\rt_stream_debug.log
+/// Cached path to active log file
 static LOG_FILE_PATH: OnceLock<PathBuf> = OnceLock::new();
 
 /// Returns the %TEMP% directory dynamically using Win32 GetTempPathW.
@@ -36,7 +39,100 @@ pub fn get_temp_dir() -> PathBuf {
     }
 }
 
-/// Initializes the global logger and returns the active log file path.
+/// Rotates log files in `logs_dir` keeping at most 5 files.
+fn rotate_logs_if_needed(logs_dir: &std::path::Path) {
+    let active_log = logs_dir.join("strawberry32_debug.log");
+    if !active_log.is_file() {
+        return;
+    }
+
+    // Only rotate if file has existing content
+    if let Ok(meta) = active_log.metadata() {
+        if meta.len() == 0 {
+            return;
+        }
+    }
+
+    // Shift 3 -> 4, 2 -> 3, 1 -> 2
+    let _ = std::fs::remove_file(logs_dir.join("strawberry32_debug.4.log"));
+    for i in (1..=3).rev() {
+        let src = logs_dir.join(format!("strawberry32_debug.{}.log", i));
+        let dst = logs_dir.join(format!("strawberry32_debug.{}.log", i + 1));
+        if src.is_file() {
+            let _ = std::fs::rename(src, dst);
+        }
+    }
+    let _ = std::fs::rename(&active_log, logs_dir.join("strawberry32_debug.1.log"));
+}
+
+/// Sanitizes log messages to ensure authentication tokens, API keys and credentials are never logged.
+pub fn sanitize_log_message(msg: &str) -> String {
+    let lower = msg.to_ascii_lowercase();
+    if !lower.contains("token=") && !lower.contains("api_key=") && !lower.contains("key=") && !lower.contains("secret=") {
+        return msg.to_string();
+    }
+
+    let mut out = String::with_capacity(msg.len());
+    let mut rest = msg;
+    while let Some(idx) = rest.find(|c| c == '?' || c == '&') {
+        out.push_str(&rest[..idx + 1]);
+        rest = &rest[idx + 1..];
+        for prefix in &["token=", "api_key=", "key=", "secret="] {
+            if rest.to_ascii_lowercase().starts_with(prefix) {
+                out.push_str(prefix);
+                out.push_str("[REDACTED]");
+                if let Some(next_param) = rest.find('&') {
+                    rest = &rest[next_param..];
+                } else if let Some(space) = rest.find(' ') {
+                    rest = &rest[space..];
+                } else {
+                    rest = "";
+                }
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Returns the last ~50 log lines recorded in memory.
+pub fn get_recent_logs() -> Vec<String> {
+    if let Ok(guard) = RECENT_LOGS.lock() {
+        guard.iter().cloned().collect()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Gathers hardware and OS diagnostic information for crash dumps and diagnostics UI.
+pub fn get_system_diagnostic_summary() -> String {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut mem: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
+    mem.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+    let (total_ram_mb, free_ram_mb, mem_load) = unsafe {
+        if GlobalMemoryStatusEx(&mut mem) != 0 {
+            (mem.ullTotalPhys / (1024 * 1024), mem.ullAvailPhys / (1024 * 1024), mem.dwMemoryLoad)
+        } else {
+            (0, 0, 0)
+        }
+    };
+
+    let base_module = unsafe {
+        windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null()) as usize
+    };
+
+    format!(
+        "Application: Strawberry32 v{}\nTarget: ARM32 thumbv7a-pc-windows-msvc (Windows RT 8.1 / NVIDIA Tegra 3)\nExecutable Base: 0x{:08X}\nRAM: {} MB Free / {} MB Total (Load: {}%)\n",
+        env!("CARGO_PKG_VERSION"),
+        base_module,
+        free_ram_mb,
+        total_ram_mb,
+        mem_load
+    )
+}
+
+/// Initializes the global logger, performs log rotation, and returns the active log file path.
 pub fn init() -> PathBuf {
     let log_dir = if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
         PathBuf::from(local_appdata).join("Strawberry32").join("logs")
@@ -44,9 +140,12 @@ pub fn init() -> PathBuf {
         get_temp_dir().join("Strawberry32").join("logs")
     };
     let _ = std::fs::create_dir_all(&log_dir);
+
+    rotate_logs_if_needed(&log_dir);
+
     let log_file = log_dir.join("strawberry32_debug.log");
 
-    // Initialize or truncate log file on app startup
+    // Initialize or truncate active log file on app startup
     let _ = OpenOptions::new()
         .create(true)
         .write(true)
@@ -88,13 +187,15 @@ pub fn drain_ui_logs() -> Vec<String> {
 }
 
 /// Central log dispatcher:
-/// 1. Prints to stdout
-/// 2. Appends to %TEMP%\rt_stream_debug.log
-/// 3. Queues for GUI in a minimal lock scope
-/// 4. Drops lock FIRST, then posts WM_APP_NEW_LOG if no notification is pending
+/// 1. Sanitizes credentials & tokens
+/// 2. Prints to stdout (if console allocated)
+/// 3. Appends to active log file (flushing immediately on errors)
+/// 4. Stores in 50-line memory ring buffer
+/// 5. Queues for GUI listbox
 pub fn log_entry(tag: &str, message: &str) {
+    let sanitized = sanitize_log_message(message);
     let timestamp = format_local_now();
-    let formatted = format!("{} [{}] {}", timestamp, tag, message);
+    let formatted = format!("{} [{}] {}", timestamp, tag, sanitized);
 
     // 1. stdout
     println!("{}", formatted);
@@ -103,10 +204,21 @@ pub fn log_entry(tag: &str, message: &str) {
     if let Some(path) = LOG_FILE_PATH.get() {
         if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
             let _ = writeln!(file, "{}", formatted);
+            if tag == "ERR" {
+                let _ = file.flush();
+            }
         }
     }
 
-    // 3. Queue for GUI inside a minimal scope block
+    // 3. Ring buffer for crash logs & diagnostics
+    if let Ok(mut rb) = RECENT_LOGS.lock() {
+        rb.push_back(formatted.clone());
+        if rb.len() > 50 {
+            rb.pop_front();
+        }
+    }
+
+    // 4. Queue for GUI inside a minimal scope block
     {
         if let Ok(mut q) = LOG_QUEUE.lock() {
             q.push_back(formatted);
@@ -117,7 +229,7 @@ pub fn log_entry(tag: &str, message: &str) {
         }
     } // Queue lock is dropped immediately here!
 
-    // 4. Notify GUI without holding any locks, and only if a notification isn't already pending
+    // 5. Notify GUI without holding any locks, and only if a notification isn't already pending
     let hwnd = GUI_HWND.load(Ordering::SeqCst);
     if hwnd != 0 {
         if !LOG_NOTIFY_PENDING.swap(true, Ordering::SeqCst) {

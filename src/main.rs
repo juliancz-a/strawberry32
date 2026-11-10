@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 mod addons;
 mod cache_cleaner;
 mod container_meta;
@@ -11,11 +13,161 @@ mod trackers;
 mod ui;
 
 use logger::{log_err, log_info};
-use std::fs::OpenOptions;
-use std::io::Write;
+
+#[repr(C)]
+struct EXCEPTION_RECORD {
+    exception_code: u32,
+    exception_flags: u32,
+    exception_record: *mut EXCEPTION_RECORD,
+    exception_address: *mut std::ffi::c_void,
+    number_parameters: u32,
+    exception_information: [usize; 15],
+}
+
+#[repr(C)]
+struct EXCEPTION_POINTERS {
+    exception_record: *mut EXCEPTION_RECORD,
+    context_record: *mut std::ffi::c_void,
+}
+
+const GENERIC_READ: u32 = 0x80000000;
+const GENERIC_WRITE: u32 = 0x40000000;
+
+#[allow(non_camel_case_types)]
+type PVECTORED_EXCEPTION_HANDLER = Option<unsafe extern "system" fn(info: *mut EXCEPTION_POINTERS) -> i32>;
+
+extern "system" {
+    fn SetUnhandledExceptionFilter(top_level_filter: PVECTORED_EXCEPTION_HANDLER) -> PVECTORED_EXCEPTION_HANDLER;
+}
+
+unsafe extern "system" fn unhandled_native_exception_filter(info: *mut EXCEPTION_POINTERS) -> i32 {
+    let (code, addr) = if !info.is_null() && !(*info).exception_record.is_null() {
+        let rec = &*(*info).exception_record;
+        (rec.exception_code, rec.exception_address as usize)
+    } else {
+        (0, 0)
+    };
+
+    let crash_file = state::get_logs_dir().join("crash.log");
+    let diag = logger::get_system_diagnostic_summary();
+    let recent = logger::get_recent_logs();
+
+    let mut report = format!(
+        "=== STRAWBERRY32 NATIVE EXCEPTION CRASH REPORT ===\nException Code: 0x{:08X}\nException Address: 0x{:08X}\n{}\nRecent Activity (last {} events):\n",
+        code,
+        addr,
+        diag,
+        recent.len()
+    );
+    for l in recent {
+        report.push_str("  ");
+        report.push_str(&l);
+        report.push('\n');
+    }
+    report.push_str("\n=== END OF REPORT ===\n\n");
+
+    let _ = std::fs::write(&crash_file, report);
+
+    try_write_minidump(info);
+
+    1 // EXCEPTION_EXECUTE_HANDLER
+}
+
+unsafe fn try_write_minidump(info: *mut EXCEPTION_POINTERS) {
+    use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
+    let dbghelp = LoadLibraryA(b"dbghelp.dll\0".as_ptr());
+    if !dbghelp.is_null() {
+        let proc = GetProcAddress(dbghelp, b"MiniDumpWriteDump\0".as_ptr());
+        if let Some(dump_fn) = proc {
+            type MiniDumpWriteDumpFn = unsafe extern "system" fn(
+                windows_sys::Win32::Foundation::HANDLE,
+                u32,
+                windows_sys::Win32::Foundation::HANDLE,
+                u32,
+                *const std::ffi::c_void,
+                *const std::ffi::c_void,
+                *const std::ffi::c_void,
+            ) -> i32;
+
+            let dump_fn: MiniDumpWriteDumpFn = std::mem::transmute(dump_fn);
+            let dmp_path = state::get_logs_dir().join("crash.dmp");
+            let dmp_wide: Vec<u16> = dmp_path.to_string_lossy().encode_utf16().chain(std::iter::once(0)).collect();
+            use windows_sys::Win32::Storage::FileSystem::*;
+            let file_handle = CreateFileW(
+                dmp_wide.as_ptr(),
+                GENERIC_WRITE,
+                0,
+                std::ptr::null(),
+                CREATE_ALWAYS,
+                FILE_ATTRIBUTE_NORMAL,
+                std::ptr::null_mut(),
+            );
+            if !file_handle.is_null() && file_handle != windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+                #[repr(C)]
+                struct MINIDUMP_EXCEPTION_INFORMATION {
+                    thread_id: u32,
+                    exception_pointers: *mut EXCEPTION_POINTERS,
+                    client_pointers: i32,
+                }
+                let exp_info = MINIDUMP_EXCEPTION_INFORMATION {
+                    thread_id: windows_sys::Win32::System::Threading::GetCurrentThreadId(),
+                    exception_pointers: info,
+                    client_pointers: 0,
+                };
+                let current_proc = windows_sys::Win32::System::Threading::GetCurrentProcess();
+                let current_pid = windows_sys::Win32::System::Threading::GetCurrentProcessId();
+                let _ = dump_fn(
+                    current_proc,
+                    current_pid,
+                    file_handle,
+                    0, // MiniDumpNormal
+                    &exp_info as *const _ as *const std::ffi::c_void,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                );
+                windows_sys::Win32::Foundation::CloseHandle(file_handle);
+            }
+        }
+        windows_sys::Win32::Foundation::CloseHandle(dbghelp as windows_sys::Win32::Foundation::HANDLE);
+    }
+}
+
+fn attach_console_if_requested() {
+    let wants_console = std::env::args().any(|a| a == "--console");
+    if wants_console {
+        unsafe {
+            if windows_sys::Win32::System::Console::AllocConsole() != 0 {
+                use windows_sys::Win32::Storage::FileSystem::*;
+                use windows_sys::Win32::System::Console::*;
+                let conout_name: Vec<u16> = "CONOUT$\0".encode_utf16().collect();
+                let conout = CreateFileW(
+                    conout_name.as_ptr(),
+                    GENERIC_READ | GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    std::ptr::null(),
+                    OPEN_EXISTING,
+                    0,
+                    std::ptr::null_mut(),
+                );
+                if !conout.is_null() && conout != windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+                    SetStdHandle(STD_OUTPUT_HANDLE, conout);
+                    SetStdHandle(STD_ERROR_HANDLE, conout);
+                }
+            }
+        }
+    }
+}
 
 fn main() {
-    // 0. Install panic hook to persist fatal panics to logs/crash.log
+    // Check opt-in --console CLI flag
+    attach_console_if_requested();
+
+    // 0. Install native unhandled exception filter for Media Foundation / COM / DXVA native faults
+    unsafe {
+        SetUnhandledExceptionFilter(Some(unhandled_native_exception_filter));
+    }
+
+    // 0b. Install Rust panic hook with hardware diagnostics & last 50 log lines
     std::panic::set_hook(Box::new(|info| {
         let crash_file = state::get_logs_dir().join("crash.log");
         let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
@@ -30,14 +182,21 @@ fn main() {
             .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
             .unwrap_or_else(|| "unknown location".to_string());
 
-        let report = format!(
-            "=== STRAWBERRY32 CRASH REPORT ===\nLocation: {}\nMessage: {}\n\n",
-            location, payload
-        );
+        let diag = logger::get_system_diagnostic_summary();
+        let recent = logger::get_recent_logs();
 
-        if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&crash_file) {
-            let _ = f.write_all(report.as_bytes());
+        let mut report = format!(
+            "=== STRAWBERRY32 RUST PANIC REPORT ===\nLocation: {}\nMessage: {}\n{}\nRecent Activity (last {} events):\n",
+            location, payload, diag, recent.len()
+        );
+        for l in recent {
+            report.push_str("  ");
+            report.push_str(&l);
+            report.push('\n');
         }
+        report.push_str("\n=== END OF REPORT ===\n\n");
+
+        let _ = std::fs::write(&crash_file, report);
         log_err(&format!("CRITICAL UNCAUGHT PANIC at {}: {}", location, payload));
     }));
 

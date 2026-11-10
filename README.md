@@ -18,9 +18,9 @@
 
 ## 🍓 Overview
 
-**Strawberry32** is a dedicated streaming entertainment platform engineered from scratch for the Microsoft Surface RT (1st Gen), Surface 2, and other 32-bit ARM (ARMv7 / `thumbv7a`) Windows RT devices. 
+**Strawberry32** is a dedicated streaming entertainment media player engineered from scratch for the Microsoft Surface RT (1st Gen), Surface 2, and other 32-bit ARM (ARMv7 / `thumbv7a`) Windows RT devices. 
 
-By combining **Rust**, **Slint Software Rendering**, **librqbit**, and low-level **Windows Media Foundation** APIs, Strawberry32 bypasses modern web bloat, providing smooth 720p/1080p video playback and rich catalog exploration within a 2 GB RAM budget and low-power Tegra 3 SoC.
+By combining **Rust**, **Slint CPU Software Rendering**, **librqbit**, and low-level **Windows Media Foundation** APIs, Strawberry32 bypasses modern heavy web runtimes, delivering smooth 720p/1080p video playback and fluid catalog navigation within a tight 2 GB RAM budget and low-power Tegra 3 SoC.
 
 <!-- PLACEHOLDER: Main Application Showcase -->
 > _<!-- [Screenshot Placeholder: Strawberry32 Home Screen with Hero Banner and Catalog Rows] -->_
@@ -31,19 +31,21 @@ By combining **Rust**, **Slint Software Rendering**, **librqbit**, and low-level
 ## ✨ Features
 
 - **⚡ Hardware-Accelerated Playback**:
-  Streams video through Windows Media Foundation (`IMFPMediaPlayer`), utilizing NVIDIA Tegra 3 hardware H.264 (8-bit) decoding for buttery-smooth 720p and 1080p playback with negligible CPU load.
+  Streams video through Windows Media Foundation (`IMFPMediaPlayer`), utilizing NVIDIA Tegra 3 hardware H.264 (8-bit) decoding for fluid 720p and 1080p playback with negligible CPU load.
 - **🔄 Intelligent Torrent Streaming Engine**:
-  Powered by `librqbit 8.0` with dynamic container probing (`moov` atom for MP4 and `EBML/Cues` for MKV). Pre-fetches container headers and initial chunks so video starts buffering in seconds.
-- **🌐 Full Stremio Add-on Ecosystem**:
-  Directly compatible with Stremio v3 protocol add-ons (Cinemeta, Torrentio, CyberFlix, and custom community manifests).
-- **🎨 Polished Touch-First Slint UI**:
-  Features a responsive sidebar, rich hero banner, multi-row catalogs with lazy loading, and an embedded player overlay styled in deep obsidian (`#0e0e12`) and neon strawberry (`#ff4b82`).
-- **💬 Subtitle Engine**:
-  Transparent rounded subtitle container with zero UI jump, automatic subtitle selection by language, live timing sync adjustment (-250ms / +250ms), and custom font sizing.
+  Powered by `librqbit 8.0` with dynamic container probing (`moov` atom for MP4 and `EBML/Cues` for MKV). Pre-fetches container headers and initial chunks so video starts buffering rapidly with multi-stage progress tracking.
+- **🌐 Modular Stremio Add-on Protocol**:
+  Compatible with standard Stremio v3 protocol add-ons. Users can connect modular add-on manifests via HTTP/HTTPS URLs to browse catalogs and stream sources.
+- **🎨 Touch & Keyboard-First Slint UI**:
+  Obsidian dark theme (`#0e0e12`) with strawberry accents (`#ff4b82`), paged catalog rows with on-demand image decoding, collapsible details drawer, and native fullscreen support.
+- **💬 Layered GDI Subtitle Engine**:
+  Per-pixel alpha layered subtitle window with real-time scaling (50%–200%), live sync delay adjustment (-250ms / +250ms), and OpenSubtitles v3 integration.
 - **🔍 Advanced Search, Filtering & Sorting**:
-  Browse categories directly in Search, filter by Genre (Action, Comedy, Sci-Fi, Horror, etc.), sort by Rating, Year, Popularity, or Title with ascending/descending toggles.
+  Search movies and series, filter by Genre (Action, Comedy, Sci-Fi, Horror, etc.), sort by Rating, Year, Popularity, or Title with ascending/descending toggles.
+- **⏮️ Continue Watching & Library**:
+  Resumes recently played content directly from the Home screen or Library tab, storing watch progress locally.
 - **💾 Low-Footprint Storage & Cache**:
-  All telemetry, cache, and history are consolidated under `%LOCALAPPDATA%\Strawberry32`, with configurable torrent and image cache limits to protect device eMMC storage.
+  All telemetry, cache, logs, and settings are consolidated under `%LOCALAPPDATA%\Strawberry32`, with configurable disk limits to safeguard eMMC flash storage.
 
 ---
 
@@ -57,7 +59,22 @@ By combining **Rust**, **Slint Software Rendering**, **librqbit**, and low-level
 
 | Detail View & Stream Selection | In-Player Hardware Playback & Subtitles |
 | :---: | :---: |
-| _<!-- [Screenshot: Movie detail with MP4/MKV stream filters] -->_<br>`![Detail View](docs/images/screenshot-detail.png)` | _<!-- [Screenshot: Hardware accelerated playback with transparent subtitle pill] -->_<br>`![Player View](docs/images/screenshot-player.png)` |
+| _<!-- [Screenshot: Movie detail with stream filters] -->_<br>`![Detail View](docs/images/screenshot-detail.png)` | _<!-- [Screenshot: Hardware accelerated playback with transparent subtitle overlay] -->_<br>`![Player View](docs/images/screenshot-player.png)` |
+
+---
+
+## ⌨️ Controls & Shortcuts
+
+| Input | Action |
+| :--- | :--- |
+| **Space** | Play / Pause |
+| **Left Arrow** / **Touch Double-Tap Left** | Seek Backward 10 seconds |
+| **Right Arrow** / **Touch Double-Tap Right** | Seek Forward 10 seconds |
+| **Up Arrow** | Increase Volume (+5%) |
+| **Down Arrow** | Decrease Volume (-5%) |
+| **F** / **Touch Double-Tap Center** | Toggle Fullscreen |
+| **M** | Toggle Mute |
+| **Escape** | Exit Fullscreen / Back |
 
 ---
 
@@ -74,9 +91,9 @@ By combining **Rust**, **Slint Software Rendering**, **librqbit**, and low-level
    │               Native Rust Application Core                 │
    │  ┌──────────────────────┐        ┌──────────────────────┐  │
    │  │   Addon Manager      │        │  Metadata Inspector  │  │
-   │  │ (Cinemeta/Torrentio) │        │ (moov & EBML Cues)   │  │
+   │  │ (Stremio v3 Protocol)│        │ (moov & EBML Cues)   │  │
    │  └──────────┬───────────┘        └──────────┬───────────┘  │
-   │             │ Magnet Link                   │ Byte Ranges  │
+   │             │ Stream Resource               │ Byte Ranges  │
    │             ▼                               ▼              │
    │  ┌──────────────────────────────────────────────────────┐  │
    │  │      librqbit BitTorrent Swarm Streaming Engine      │  │
@@ -92,9 +109,9 @@ By combining **Rust**, **Slint Software Rendering**, **librqbit**, and low-level
 ```
 
 ### Surface RT (Tegra 3) Engineering Constraints
-1. **CPU/GPU Constraints**: NVIDIA Tegra 3 (Quad-core Cortex-A9 @ 1.3 GHz) lacks Direct3D 11 feature level support for modern GPU compositors. Strawberry32 utilizes the Slint Software Renderer, entirely eliminating D3D/DirectComposition crashes.
-2. **Video Codec Compatibility**: Hardware decoding on Windows RT 8.1 supports 8-bit H.264 (AVC) up to 1080p. 10-bit HEVC/x265, HDR, and AV1 formats are filtered out by the stream qualification engine to prevent decode stutter.
-3. **Memory Limits**: The application maintains a lean working set (< 150 MB typical RAM usage) ensuring it never causes memory paging on 2 GB RAM devices.
+1. **CPU/GPU Constraints**: NVIDIA Tegra 3 (Quad-core Cortex-A9 @ 1.3 GHz) lacks Direct3D 11 feature level support for modern GPU compositors. Strawberry32 utilizes the Slint Pure Software Renderer, eliminating GPU crashes and driver timeouts.
+2. **Video Codec Compatibility**: Hardware decoding on Windows RT 8.1 supports 8-bit H.264 (AVC) up to 1080p. Incompatible streams (e.g. 10-bit HEVC/x265 or AV1) trigger a clear prompt to open in external VLC.
+3. **Memory Limits**: The application maintains a lean working set (< 150 MB typical RAM usage) ensuring it never triggers aggressive memory paging on 2 GB RAM devices.
 
 ---
 
@@ -125,7 +142,17 @@ target/thumbv7a-pc-windows-msvc/release/Strawberry32.exe
 ### Deploying to Windows RT 8.1
 1. Ensure your Surface RT / Windows RT device is jailbroken to run unsigned desktop applications (e.g. via the standard RT 8.1 Jailbreak / Testsigning tool).
 2. Copy `Strawberry32.exe` to a folder on your device (e.g. `C:\Strawberry32\`).
-3. Run `Strawberry32.exe`. On first launch, the app will initialize its local storage in `%LOCALAPPDATA%\Strawberry32` and pre-load default verified add-ons.
+3. Run `Strawberry32.exe`. On first launch, the app initializes its local storage in `%LOCALAPPDATA%\Strawberry32` and loads public metadata providers.
+
+---
+
+## ⚖️ Legal & Compliance Notice
+
+Strawberry32 is an open-source media player and protocol client. 
+- Strawberry32 does not host, index, archive, or distribute any media files, torrents, or streams.
+- All metadata, catalog information, and subtitle data are provided via external third-party add-ons configured by the end user under standard Stremio v3 protocol specifications.
+- Strawberry32 developers do not operate or endorse third-party add-on servers and are not responsible for content accessed by users.
+- Users are solely responsible for ensuring that their use complies with all applicable local laws, regulations, and copyright requirements.
 
 ---
 
@@ -149,4 +176,3 @@ Because Slint is linked into the application under the terms of the GNU General 
 - **Stremio**: Open-source streaming system and add-on architecture by [Stremio Team](https://www.stremio.com/).
 - **stremio-native-stream-server**: Reference torrent streaming pipeline by [perpetus](https://github.com/perpetus/stremio-native-stream-server).
 - **Windows RT Community**: Dedicated enthusiasts keeping ARM32 devices functional and alive.
-

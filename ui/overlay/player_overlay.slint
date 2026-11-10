@@ -254,7 +254,7 @@ component PlayerIconBtn inherits Rectangle {
     callback clicked();
 
     height: 36px;
-    width: root.text_label != "" ? 68px : 38px;
+    width: root.text_label != "" ? 76px : 38px;
     border-radius: 6px;
     background: root.is_active ? Theme.accent : (btn_touch.pressed ? #ffffff2a : (btn_touch.has-hover ? #ffffff1a : #00000000));
 
@@ -273,17 +273,14 @@ component PlayerIconBtn inherits Rectangle {
         icon_color: root.is_active ? #ffffff : (btn_touch.has-hover ? #ffffff : #d0d0d8);
     }
 
-    // Icon + text button: both icon and text wrapped in centered VerticalLayouts
+    // Icon + text button: both icon and text cleanly centered with balanced padding
     if root.text_label != "" : HorizontalLayout {
-        width: 100%;
-        height: 100%;
-        padding-left: 8px;
-        padding-right: 8px;
-        spacing: 5px;
         alignment: center;
+        spacing: 6px;
 
         VerticalLayout {
             alignment: center;
+            horizontal-stretch: 0;
             PlayerIconGlyph {
                 icon_type: root.icon_type;
                 icon_color: root.is_active ? #ffffff : (btn_touch.has-hover ? #ffffff : #d0d0d8);
@@ -292,12 +289,14 @@ component PlayerIconBtn inherits Rectangle {
 
         VerticalLayout {
             alignment: center;
+            horizontal-stretch: 0;
             Text {
                 text: root.text_label;
                 font-size: 12px;
                 font-weight: 700;
                 color: root.is_active ? #ffffff : (btn_touch.has-hover ? #ffffff : #d0d0d8);
                 vertical-alignment: center;
+                horizontal-alignment: center;
             }
         }
     }
@@ -333,7 +332,7 @@ export component PlayerOverlay inherits Window {
     in-out property <bool> is_subtitle_loading: false;
     in-out property <int> selected_subtitle_idx: 0;
     in-out property <int> sub_delay_ms: 0;
-    in-out property <int> sub_size: 1; // 0=Small, 1=Medium, 2=Large
+    in-out property <int> sub_size: 100; // Percentage: 50..200% (default 100%)
 
     // Stream & Hardware Info
     in-out property <string> stream_info_text: "720p H.264 • AAC Stereo • Hardware Accelerated";
@@ -866,36 +865,83 @@ export component PlayerOverlay inherits Window {
 
                 Rectangle { height: 1px; background: #2a2b2e; }
 
-                // Subtitle Size Selection (Compact single-row header + buttons)
+                // Subtitle Size Selection (Percentage slider 50%..200% + Reset button)
                 HorizontalLayout {
                     height: 30px;
+                    spacing: 8px;
                     alignment: space-between;
+
                     Text {
-                        text: "Size:";
+                        text: "Size: " + root.sub_size + "%";
                         font-size: 12px;
                         font-weight: 700;
                         color: Theme.text-muted;
                         vertical-alignment: center;
+                        min-width: 68px;
                     }
 
-                    HorizontalLayout {
-                        spacing: 6px;
-                        alignment: end;
+                    // Interactive slider 50%..200% (150% span)
+                    Rectangle {
+                        width: 140px;
+                        height: 20px;
+                        background: #00000000;
 
-                        OverlayButton {
-                            text: "Small";
-                            is_active: root.sub_size == 0;
-                            clicked => { root.user_activity(); root.sub_size_changed(0); }
+                        Rectangle {
+                            y: 8px;
+                            width: 100%;
+                            height: 4px;
+                            background: #25262b;
+                            border-radius: 2px;
+
+                            Rectangle {
+                                x: 0px;
+                                y: 0px;
+                                height: 100%;
+                                width: max(0px, min(parent.width, ((root.sub_size - 50) / 150.0) * parent.width));
+                                background: Theme.accent;
+                                border-radius: 2px;
+                            }
+
+                            Rectangle {
+                                x: max(0px, min(parent.width - 10px, ((root.sub_size - 50) / 150.0) * parent.width - 5px));
+                                y: -3px;
+                                width: 10px;
+                                height: 10px;
+                                border-radius: 5px;
+                                background: #ffffff;
+                            }
                         }
-                        OverlayButton {
-                            text: "Normal";
-                            is_active: root.sub_size == 1;
-                            clicked => { root.user_activity(); root.sub_size_changed(1); }
+
+                        TouchArea {
+                            width: 100%;
+                            height: 100%;
+                            mouse-cursor: pointer;
+                            moved => {
+                                root.user_activity();
+                                if self.pressed {
+                                    let ratio = max(0.0, min(1.0, self.mouse-x / parent.width));
+                                    let new_pct = max(50, min(200, round(50.0 + ratio * 150.0)));
+                                    root.sub_size = new_pct;
+                                    root.sub_size_changed(root.sub_size);
+                                }
+                            }
+                            clicked => {
+                                root.user_activity();
+                                let ratio = max(0.0, min(1.0, self.mouse-x / parent.width));
+                                let new_pct = max(50, min(200, round(50.0 + ratio * 150.0)));
+                                root.sub_size = new_pct;
+                                root.sub_size_changed(root.sub_size);
+                            }
                         }
-                        OverlayButton {
-                            text: "Large";
-                            is_active: root.sub_size == 2;
-                            clicked => { root.user_activity(); root.sub_size_changed(2); }
+                    }
+
+                    OverlayButton {
+                        text: "100%";
+                        is_active: root.sub_size == 100;
+                        clicked => {
+                            root.user_activity();
+                            root.sub_size = 100;
+                            root.sub_size_changed(100);
                         }
                     }
                 }

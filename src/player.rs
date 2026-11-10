@@ -315,6 +315,7 @@ pub fn update_video_position(_left: i32, _top: i32, _width: i32, _height: i32) {
                 if hr_state >= 0 && st >= 1 && st <= 3 {
                     let _ = com_call_0(state.p_player, 32); // UpdateVideo
                     if !state.video_hwnd.is_null() {
+                        windows_sys::Win32::Graphics::Gdi::InvalidateRect(state.video_hwnd, std::ptr::null(), 0);
                         windows_sys::Win32::Graphics::Gdi::UpdateWindow(state.video_hwnd);
                     }
                 }
