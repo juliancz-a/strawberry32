@@ -11,6 +11,7 @@ export struct StreamItem {
     audio_codec: string,
     seeders: int,
     is_mp4: bool,
+    is_jellyfin: bool,
 }
 
 export struct EpisodeItem {
@@ -28,10 +29,10 @@ component StreamCard inherits Rectangle {
     callback vlc_clicked(int);
 
     height: 68px;
-    background: Theme.surface;
+    background: root.stream.is_jellyfin ? #162238 : Theme.surface;
     border-radius: 6px;
     border-width: 1px;
-    border-color: Theme.surface-raised;
+    border-color: root.stream.is_jellyfin ? #3b82f6 : Theme.surface-raised;
 
     HorizontalLayout {
         padding-left: 14px;
@@ -728,7 +729,8 @@ export component DetailView inherits Rectangle {
                         for fmt in [
                             { id: "all", label: "All" },
                             { id: "mp4", label: "MP4" },
-                            { id: "mkv", label: "MKV" }
+                            { id: "mkv", label: "MKV" },
+                            { id: "jellyfin", label: "Jellyfin" }
                         ] : Rectangle {
                             height: 24px;
                             background: root.stream_filter_format == fmt.id ? Theme.accent : Theme.surface;

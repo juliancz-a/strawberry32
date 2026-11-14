@@ -182,6 +182,7 @@ static ENGINE_TX: OnceLock<Sender<EngineCommand>> = OnceLock::new();
 static ACTIVE_TORRENT_ID: Mutex<Option<usize>> = Mutex::new(None);
 
 pub fn stop_active_stream() {
+    BUNDLED_SUBTITLES.lock().unwrap().clear();
     if let Some(tx) = ENGINE_TX.get() {
         let _ = tx.send(EngineCommand::StopActiveStream);
     }
@@ -307,6 +308,7 @@ pub fn start_engine() -> Result<(), String> {
 }
 
 async fn stop_previous_torrent(session: &std::sync::Arc<Session>) {
+    BUNDLED_SUBTITLES.lock().unwrap().clear();
     crate::engine::remux_proxy::bump_stream_generation();
     let old_id = {
         let mut guard = ACTIVE_TORRENT_ID.lock().unwrap();

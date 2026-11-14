@@ -4,3 +4,6 @@ stremio_src
 /spec-docs
 /vendor
 /test
+.env
+docs
+scripts

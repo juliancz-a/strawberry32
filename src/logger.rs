@@ -65,35 +65,9 @@ fn rotate_logs_if_needed(logs_dir: &std::path::Path) {
     let _ = std::fs::rename(&active_log, logs_dir.join("strawberry32_debug.1.log"));
 }
 
-/// Sanitizes log messages to ensure authentication tokens, API keys and credentials are never logged.
+/// Sanitizes log messages to ensure authentication tokens, API keys, passwords, and full add-on URLs are never logged.
 pub fn sanitize_log_message(msg: &str) -> String {
-    let lower = msg.to_ascii_lowercase();
-    if !lower.contains("token=") && !lower.contains("api_key=") && !lower.contains("key=") && !lower.contains("secret=") {
-        return msg.to_string();
-    }
-
-    let mut out = String::with_capacity(msg.len());
-    let mut rest = msg;
-    while let Some(idx) = rest.find(|c| c == '?' || c == '&') {
-        out.push_str(&rest[..idx + 1]);
-        rest = &rest[idx + 1..];
-        for prefix in &["token=", "api_key=", "key=", "secret="] {
-            if rest.to_ascii_lowercase().starts_with(prefix) {
-                out.push_str(prefix);
-                out.push_str("[REDACTED]");
-                if let Some(next_param) = rest.find('&') {
-                    rest = &rest[next_param..];
-                } else if let Some(space) = rest.find(' ') {
-                    rest = &rest[space..];
-                } else {
-                    rest = "";
-                }
-                break;
-            }
-        }
-    }
-    out.push_str(rest);
-    out
+    crate::redact::redact_secrets(msg)
 }
 
 /// Returns the last ~50 log lines recorded in memory.
@@ -262,20 +236,8 @@ pub fn log_err(msg: &str) {
 
 /// Logs full ureq HTTP / TLS error chain (essential for diagnosing Windows RT Schannel handshakes)
 pub fn log_ureq_err(context: &str, err: &ureq::Error) {
-    match err {
-        ureq::Error::Status(code, resp) => {
-            let status_text = resp.status_text().to_string();
-            log_err(&format!("{}: HTTP {} {}", context, code, status_text));
-        }
-        ureq::Error::Transport(transport_err) => {
-            log_err(&format!("{}: Error de Transporte / TLS Schannel: {}", context, transport_err));
-            let mut source = std::error::Error::source(transport_err);
-            while let Some(s) = source {
-                log_err(&format!("   -> Causa: {}", s));
-                source = std::error::Error::source(s);
-            }
-        }
-    }
+    let classified = crate::net::classify_ureq_error(err);
+    log_err(&format!("{}: {} ({})", context, classified.user_message, classified.detail));
 }
 
 /// Logs Win32 GetLastError with context

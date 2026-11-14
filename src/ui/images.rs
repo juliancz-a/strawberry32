@@ -203,7 +203,7 @@ fn process_image_request(url: &str, target_w: u32, target_h: u32) -> Option<Shar
             let resp = match agent.get(&effective_url).call() {
                 Ok(r) => r,
                 Err(e) => {
-                    log_err(&format!("Failed to fetch image '{}': {}", effective_url, e));
+                    log_err(&format!("Failed to fetch image '{}': {}", crate::redact::redact_url(&effective_url), crate::redact::redact_secrets(&e.to_string())));
                     return None;
                 }
             };

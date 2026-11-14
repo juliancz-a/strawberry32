@@ -5,8 +5,16 @@ export struct AddonItem {
     id: string,
     name: string,
     version: string,
+    host: string,
     description: string,
     enabled: bool,
+}
+
+export struct JellyfinServerItem {
+    id: string,
+    name: string,
+    host: string,
+    username: string,
 }
 
 component SettingsButton inherits Rectangle {
@@ -295,6 +303,17 @@ export component SettingsView inherits Rectangle {
     callback card_size_changed(string);
     callback clear_logs_clicked();
 
+    // Jellyfin Native Source
+    in-out property <[JellyfinServerItem]> jellyfin_servers: [];
+    in-out property <string> jellyfin_url_input: "";
+    in-out property <string> jellyfin_user_input: "";
+    in-out property <string> jellyfin_pass_input: "";
+    in-out property <string> jellyfin_status: "";
+    callback jellyfin_test_clicked(string);
+    callback jellyfin_connect_clicked(string, string, string);
+    callback jellyfin_quick_connect_clicked(string);
+    callback jellyfin_remove_clicked(string);
+
     background: Theme.bg;
 
     HorizontalLayout {
@@ -355,6 +374,13 @@ export component SettingsView inherits Rectangle {
                     icon: @image-url("../icons/scroll-text.svg");
                     is_active: root.active_tab == 4;
                     clicked => { root.active_tab = 4; root.tab_changed(4); }
+                }
+
+                SettingsTabButton {
+                    label: "Jellyfin";
+                    icon: @image-url("../icons/server.svg");
+                    is_active: root.active_tab == 6;
+                    clicked => { root.active_tab = 6; root.tab_changed(6); }
                 }
 
                 SettingsTabButton {
@@ -454,7 +480,7 @@ export component SettingsView inherits Rectangle {
                                         }
 
                                         Text {
-                                            text: "v" + addon.version;
+                                            text: "v" + addon.version + (addon.host != "" ? " • " + addon.host : "");
                                             font-size: 11px;
                                             color: Theme.text-muted;
                                             vertical-alignment: center;
@@ -815,6 +841,146 @@ export component SettingsView inherits Rectangle {
                         }
                     }
 
+                    // TAB 6: JELLYFIN NATIVE SOURCE
+                    if root.active_tab == 6 : VerticalLayout {
+                        alignment: start;
+                        spacing: 14px;
+
+                        Text {
+                            text: "Jellyfin (Native Direct Source)";
+                            font-size: 18px;
+                            font-weight: 800;
+                            color: Theme.text;
+                        }
+
+                        Text {
+                            text: "Connect directly to your Jellyfin server without plugins. Supports server-side H.264/AAC transcoding for Surface RT.";
+                            font-size: 12px;
+                            color: Theme.text-muted;
+                            wrap: word-wrap;
+                        }
+
+                        Rectangle {
+                            background: Theme.surface-raised;
+                            border-radius: 6px;
+
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 10px;
+
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    LineEdit {
+                                        horizontal-stretch: 1;
+                                        height: 34px;
+                                        placeholder-text: "Server URL (e.g. http://192.168.1.10:8096)";
+                                        text <=> root.jellyfin_url_input;
+                                    }
+                                    SettingsButton {
+                                        text: "Test connection";
+                                        clicked => {
+                                            root.jellyfin_test_clicked(root.jellyfin_url_input);
+                                        }
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    LineEdit {
+                                        horizontal-stretch: 1;
+                                        height: 34px;
+                                        placeholder-text: "Username";
+                                        text <=> root.jellyfin_user_input;
+                                    }
+                                    LineEdit {
+                                        horizontal-stretch: 1;
+                                        height: 34px;
+                                        placeholder-text: "Password";
+                                        input-type: InputType.password;
+                                        text <=> root.jellyfin_pass_input;
+                                        accepted => {
+                                            root.jellyfin_connect_clicked(root.jellyfin_url_input, root.jellyfin_user_input, root.jellyfin_pass_input);
+                                        }
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    SettingsButton {
+                                        text: "Connect";
+                                        is_accent: true;
+                                        clicked => {
+                                            root.jellyfin_connect_clicked(root.jellyfin_url_input, root.jellyfin_user_input, root.jellyfin_pass_input);
+                                        }
+                                    }
+                                    SettingsButton {
+                                        text: "Quick Connect";
+                                        clicked => {
+                                            root.jellyfin_quick_connect_clicked(root.jellyfin_url_input);
+                                        }
+                                    }
+                                }
+
+                                if root.jellyfin_status != "" : Text {
+                                    text: root.jellyfin_status;
+                                    font-size: 12px;
+                                    color: Theme.text;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: "Connected Servers";
+                            font-size: 14px;
+                            font-weight: 700;
+                            color: Theme.text;
+                        }
+
+                        if root.jellyfin_servers.length == 0 : Text {
+                            text: "No Jellyfin servers connected yet.";
+                            font-size: 12px;
+                            color: Theme.text-muted;
+                        }
+
+                        for srv in root.jellyfin_servers : Rectangle {
+                            height: 54px;
+                            background: Theme.surface-raised;
+                            border-radius: 6px;
+
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                alignment: space-between;
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 2px;
+                                    Text {
+                                        text: srv.name + " (" + srv.username + ")";
+                                        font-size: 13px;
+                                        font-weight: 700;
+                                        color: Theme.text;
+                                    }
+                                    Text {
+                                        text: srv.host;
+                                        font-size: 11px;
+                                        color: Theme.text-muted;
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    SettingsButton {
+                                        text: "Remove";
+                                        height: 28px;
+                                        clicked => { root.jellyfin_remove_clicked(srv.id); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // TAB 5: ABOUT
                     if root.active_tab == 5 : VerticalLayout {
                         alignment: start;
@@ -875,7 +1041,7 @@ export component SettingsView inherits Rectangle {
                                 Rectangle { height: 4px; }
 
                                 Text {
-                                    text: "Version 0.1.0 • Built with Rust and Slint";
+                                    text: "Version 0.2.0 • Built with Rust and Slint";
                                     font-size: 11px;
                                     color: Theme.text-faint;
                                 }

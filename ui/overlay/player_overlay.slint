@@ -1047,7 +1047,7 @@ export component PlayerOverlay inherits Window {
         x: 0px;
         y: parent.height - 74px;
         width: 100%;
-        height: 74px;
+        height: 80px;
         background: #101011;
 
         bottom_touch := TouchArea {
@@ -1061,35 +1061,44 @@ export component PlayerOverlay inherits Window {
         VerticalLayout {
             padding-left: 14px;
             padding-right: 14px;
-            padding-top: 6px;
+            padding-top: 4px;
             padding-bottom: 6px;
-            spacing: 6px;
+            spacing: 4px;
 
-            // Interactive seek bar with hover & playhead indicator
+            // Interactive seek bar with larger hit target, hover & playhead indicator
             seek_bar := Rectangle {
-                height: 14px;
-                background: #252627;
-                border-radius: 4px;
+                height: 22px;
+                background: transparent;
+
+                // Visual track background
+                Rectangle {
+                    x: 0px;
+                    y: 7px;
+                    width: 100%;
+                    height: seek_touch.has-hover ? 10px : 8px;
+                    background: #252627;
+                    border-radius: 4px;
+                }
 
                 // Played progress fill
                 Rectangle {
                     x: 0px;
-                    y: 3px;
+                    y: 7px;
                     height: seek_touch.has-hover ? 10px : 8px;
                     width: parent.width * max(0.0, min(1.0, root.progress));
                     background: Theme.accent;
-                    border-radius: 3px;
+                    border-radius: 4px;
                 }
 
                 // Playhead circle indicator
                 Rectangle {
-                    x: max(0px, min(parent.width - 12px, parent.width * max(0.0, min(1.0, root.progress)) - 6px));
-                    y: 1px;
-                    width: 12px;
-                    height: 12px;
-                    border-radius: 6px;
+                    x: max(0px, min(parent.width - 14px, parent.width * max(0.0, min(1.0, root.progress)) - 7px));
+                    y: 4px;
+                    width: 14px;
+                    height: 14px;
+                    border-radius: 7px;
                     background: #ffffff;
-                    border-width: 1px;
+                    border-width: 1.5px;
                     border-color: Theme.accent;
                 }
 

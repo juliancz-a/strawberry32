@@ -37,6 +37,8 @@ By combining **Rust**, **Slint CPU Software Rendering**, **librqbit**, and low-l
   Powered by `librqbit 8.0` with dynamic container probing (`moov` atom for MP4 and `EBML/Cues` for MKV). Pre-fetches container headers and initial chunks so video starts buffering rapidly with multi-stage progress tracking.
 - **🌐 Modular Stremio Add-on Protocol**:
   Compatible with standard Stremio v3 protocol add-ons. Users can connect modular add-on manifests via HTTP/HTTPS URLs to browse catalogs and stream sources.
+- **🎬 Native Jellyfin Integration**:
+  Connect directly to your personal Jellyfin server over your local network (LAN) or HTTPS—no plugins or IMDb IDs required. Automatically chooses between Direct Play and server-side H.264/AAC transcoding tailored for Tegra 3, merges Jellyfin sources onto Cinemeta cards with deduplication, and includes dedicated **Jellyfin Only** filters and Jellyfin subtitle support.
 - **🎨 Touch & Keyboard-First Slint UI**:
   Obsidian dark theme (`#0e0e12`) with strawberry accents (`#ff4b82`), paged catalog rows with on-demand image decoding, collapsible details drawer, and native fullscreen support.
 - **💬 Layered GDI Subtitle Engine**:
@@ -64,6 +66,24 @@ By combining **Rust**, **Slint CPU Software Rendering**, **librqbit**, and low-l
   <img src="ui/screenshots/settings_view.png" width="700" alt="Settings & Add-on Manager"/><br/>
   <sub>Extensive Settings: Add-on manager with priority ordering, streaming limits, card sizing, and storage cache cleaner</sub>
 </p>
+
+
+## 🎬 Connecting to Jellyfin
+
+<p align="center">
+  <img src="ui/screenshots/jellyfin_connection.png" width="700" alt="Native Jellyfin Connection Settings"/><br/>
+  <sub>Native Jellyfin Integration: Connect directly to your Jellyfin server via LAN IP or HTTPS with automatic Direct Play / server-side transcoding</sub>
+</p>
+
+Strawberry32 includes a built-in native Jellyfin client (no server-side plugins required):
+
+1. **Find your Jellyfin server's LAN IP** on the machine hosting Jellyfin (for example, `http://192.168.0.120:8096`). If you are hosting on Windows, you can check your LAN IP using 'ipconfig'. You need to copy the IPv4 address.
+2. Open **Settings → Jellyfin** in Strawberry32 (shown above):
+   - Enter your **Server URL** (e.g. `http://192.168.0.120:8096`).
+   - Enter your Jellyfin **Username** and **Password**, then click **Connect**.
+3. Once connected, you can:
+   - Browse and search your library (duplicate titles are automatically merged with Cinemeta cards, and you can toggle **Jellyfin Only** in Search).
+   - Open any title and use the **Jellyfin** filter pill (highlighted in blue) to view your server's Direct Play or transcoded H.264/AAC streams, along with Jellyfin's embedded/external subtitles.
 
 ---
 

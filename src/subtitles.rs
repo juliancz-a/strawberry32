@@ -264,6 +264,12 @@ pub fn fetch_subtitle_tracks(
     video_hash: Option<&str>,
     video_size: Option<u64>,
 ) -> Result<Vec<SubtitleTrack>, String> {
+    if imdb_id.starts_with("jellyfin:") {
+        let s_opt = if item_type == "series" { season } else { None };
+        let e_opt = if item_type == "series" { episode } else { None };
+        return Ok(crate::sources::jellyfin::fetch_subtitles_for_item(imdb_id, s_opt, e_opt));
+    }
+
     let base_query_id = if item_type == "series" {
         format!("{}:{}:{}", imdb_id, season.unwrap_or(1), episode.unwrap_or(1))
     } else {
@@ -377,12 +383,14 @@ pub fn fetch_subtitle_tracks(
 
 /// Downloads and parses a subtitle file from URL (auto-detecting SRT, WebVTT, ASS/SSA)
 pub fn download_and_parse_subtitle(url: &str) -> Result<Vec<SubtitleEntry>, String> {
-    log_info(&format!("Downloading subtitle: {}", url));
+    log_info(&format!("Downloading subtitle: {}", crate::redact::redact_url(url)));
 
-    let client = ureq::AgentBuilder::new()
-        .timeout_connect(std::time::Duration::from_secs(5))
-        .timeout_read(std::time::Duration::from_secs(8))
-        .build();
+    let client = crate::addons::create_agent().unwrap_or_else(|_| {
+        ureq::AgentBuilder::new()
+            .timeout_connect(std::time::Duration::from_secs(5))
+            .timeout_read(std::time::Duration::from_secs(8))
+            .build()
+    });
     let resp = client.get(url).call().map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
     std::io::Read::take(resp.into_reader(), 2_000_000)

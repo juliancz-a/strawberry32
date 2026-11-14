@@ -8,6 +8,7 @@ export component SearchView inherits Rectangle {
     in-out property <string> active_genre: "all";
     in-out property <string> active_sort: "popular";
     in-out property <bool> sort_asc: false;
+    in-out property <bool> jellyfin_only: false;
     in property <[CatalogItem]> movie_results: [];
     in property <[CatalogItem]> series_results: [];
     in property <[CatalogItem]> home_row1: [];
@@ -29,6 +30,7 @@ export component SearchView inherits Rectangle {
     callback genre_clicked(string);
     callback sort_clicked(string);
     callback sort_order_toggled(bool);
+    callback jellyfin_only_toggled(bool);
     callback card_selected(string, string);
     callback request_lazy_range(int, int, int);
     callback prev_page(int);
@@ -164,6 +166,37 @@ export component SearchView inherits Rectangle {
                     font-size: 12px;
                     font-weight: root.active_filter == "series" ? 700 : 500;
                     color: root.active_filter == "series" ? #ffffff : Theme.text;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            Rectangle { width: 8px; }
+
+            // Jellyfin Only Toggle Chip
+            Rectangle {
+                width: 132px;
+                height: 32px;
+                background: root.jellyfin_only ? #2563eb : Theme.surface-raised;
+                border-radius: 6px;
+                border-width: 1px;
+                border-color: root.jellyfin_only ? #3b82f6 : Theme.surface-raised;
+
+                TouchArea {
+                    width: 100%;
+                    height: 100%;
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.jellyfin_only = !root.jellyfin_only;
+                        root.jellyfin_only_toggled(root.jellyfin_only);
+                    }
+                }
+
+                Text {
+                    text: root.jellyfin_only ? "✓ Jellyfin Only" : "☐ Jellyfin Only";
+                    font-size: 12px;
+                    font-weight: root.jellyfin_only ? 700 : 500;
+                    color: root.jellyfin_only ? #ffffff : Theme.text;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }

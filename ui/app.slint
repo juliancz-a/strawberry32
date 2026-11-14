@@ -7,10 +7,10 @@ import { HeroBanner } from "components/hero_banner.slint";
 import { DetailView, StreamItem, EpisodeItem } from "views/detail_view.slint";
 import { SearchView } from "views/search_view.slint";
 import { LibraryView } from "views/library_view.slint";
-import { SettingsView, AddonItem } from "views/settings_view.slint";
+import { SettingsView, AddonItem, JellyfinServerItem } from "views/settings_view.slint";
 import { ScrollView } from "std-widgets.slint";
 
-export { Theme, PlayerOverlay, CatalogItem, StreamItem, EpisodeItem, AddonItem }
+export { Theme, PlayerOverlay, CatalogItem, StreamItem, EpisodeItem, AddonItem, JellyfinServerItem }
 
 export component MainWindow inherits Window {
     preferred-width: 1280px;
@@ -146,10 +146,18 @@ export component MainWindow inherits Window {
     in-out property <string> settings_card_size: "m";
     in-out property <string> settings_storage_path: "";
 
+    in-out property <[JellyfinServerItem]> settings_jellyfin_servers: [];
+    in-out property <string> settings_jellyfin_status: "";
+    callback settings_jellyfin_test(string);
+    callback settings_jellyfin_connect(string, string, string);
+    callback settings_jellyfin_quick_connect(string);
+    callback settings_jellyfin_remove(string);
+
     // Search and Stream Filter/Sort State
     in-out property <string> search_genre: "all";
     in-out property <string> search_sort: "popular";
     in-out property <bool> search_sort_asc: false;
+    in-out property <bool> search_jellyfin_only: false;
 
     in-out property <string> detail_stream_format: "all";
     in-out property <string> detail_stream_res: "all";
@@ -162,6 +170,7 @@ export component MainWindow inherits Window {
     callback search_genre_clicked(string);
     callback search_sort_clicked(string);
     callback search_sort_order_toggled(bool);
+    callback search_jellyfin_only_toggled(bool);
     callback detail_stream_filter_format(string);
     callback detail_stream_filter_res(string);
     callback detail_stream_sort_by(string);
@@ -672,7 +681,7 @@ export component MainWindow inherits Window {
                             Rectangle { height: 6px; }
 
                             // Stage Checklist (Phase B #7)
-                            HorizontalLayout {
+                            if !root.player_has_error : HorizontalLayout {
                                 alignment: center;
                                 spacing: 6px;
 
@@ -846,7 +855,7 @@ export component MainWindow inherits Window {
                             }
 
                             // Truthful Weighted Progress Bar
-                            HorizontalLayout {
+                            if !root.player_has_error : HorizontalLayout {
                                 alignment: center;
                                 Rectangle {
                                     width: 380px;
@@ -867,7 +876,7 @@ export component MainWindow inherits Window {
                             }
 
                             // Telemetry line (peers • speed • progress • ETA)
-                            HorizontalLayout {
+                            if !root.player_has_error : HorizontalLayout {
                                 alignment: center;
                                 Text {
                                     text: (root.player_peers_str != "" ? root.player_peers_str : "0 peers") + " • " +
@@ -881,7 +890,7 @@ export component MainWindow inherits Window {
                             }
 
                             // Smart hint banner when few peers detected after 15s
-                            if root.player_has_hint : HorizontalLayout {
+                            if !root.player_has_error && root.player_has_hint : HorizontalLayout {
                                 alignment: center;
                                 Rectangle {
                                     background: #261b16;
@@ -1097,6 +1106,7 @@ export component MainWindow inherits Window {
                     active_genre <=> root.search_genre;
                     active_sort <=> root.search_sort;
                     sort_asc <=> root.search_sort_asc;
+                    jellyfin_only <=> root.search_jellyfin_only;
                     movie_results: root.search_movie_results;
                     series_results: root.search_series_results;
                     home_row1: root.home_row1;
@@ -1127,6 +1137,10 @@ export component MainWindow inherits Window {
                     sort_order_toggled(asc) => {
                         root.search_sort_asc = asc;
                         root.search_sort_order_toggled(asc);
+                    }
+                    jellyfin_only_toggled(jf_only) => {
+                        root.search_jellyfin_only = jf_only;
+                        root.search_jellyfin_only_toggled(jf_only);
                     }
                     card_selected(id, type) => { root.card_selected(id, type); }
                     request_lazy_range(row, start, end) => { root.request_lazy_range(row, start, end); }
@@ -1166,6 +1180,13 @@ export component MainWindow inherits Window {
                     card_size: root.settings_card_size;
                     storage_path_str: root.settings_storage_path;
                     log_lines: root.log_lines;
+
+                    jellyfin_servers: root.settings_jellyfin_servers;
+                    jellyfin_status <=> root.settings_jellyfin_status;
+                    jellyfin_test_clicked(u) => { root.settings_jellyfin_test(u); }
+                    jellyfin_connect_clicked(u, user, pass) => { root.settings_jellyfin_connect(u, user, pass); }
+                    jellyfin_quick_connect_clicked(u) => { root.settings_jellyfin_quick_connect(u); }
+                    jellyfin_remove_clicked(id) => { root.settings_jellyfin_remove(id); }
 
                     has_crash_report: root.has_crash_report;
 

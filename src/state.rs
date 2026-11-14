@@ -77,12 +77,21 @@ pub fn get_posters_dir() -> PathBuf {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ManifestExtra {
+    pub name: String,
+    #[serde(default, rename = "isRequired")]
+    pub is_required: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ManifestCatalog {
     #[serde(rename = "type")]
     pub catalog_type: String,
     pub id: String,
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(default)]
+    pub extra: Vec<ManifestExtra>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -94,6 +103,8 @@ pub struct Manifest {
     pub description: Option<String>,
     #[serde(default)]
     pub types: Vec<String>,
+    #[serde(default, rename = "idPrefixes")]
+    pub id_prefixes: Vec<String>,
     #[serde(default)]
     pub catalogs: Vec<ManifestCatalog>,
     #[serde(default)]
@@ -157,6 +168,15 @@ where
     deserializer.deserialize_any(StringOrNumberVisitor)
 }
 
+pub fn deserialize_null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    T: Default + serde::Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    let opt = <Option<T> as serde::Deserialize>::deserialize(deserializer)?;
+    Ok(opt.unwrap_or_default())
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MetaVideo {
     pub id: String,
@@ -196,13 +216,13 @@ pub struct MetaDetail {
     pub imdb_rating: Option<String>,
     #[serde(default, deserialize_with = "deserialize_string_or_number")]
     pub runtime: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub cast: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub director: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub genres: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub videos: Vec<MetaVideo>,
 }
 
@@ -323,16 +343,19 @@ pub fn get_default_addons_config() -> AddonsConfig {
             version: "3.0.12".to_string(),
             description: Some("Official movies and series catalog & metadata".to_string()),
             types: vec!["movie".to_string(), "series".to_string()],
+            id_prefixes: vec!["tt".to_string()],
             catalogs: vec![
                 ManifestCatalog {
                     catalog_type: "movie".to_string(),
                     id: "top".to_string(),
                     name: Some("Popular Movies".to_string()),
+                    extra: vec![],
                 },
                 ManifestCatalog {
                     catalog_type: "series".to_string(),
                     id: "top".to_string(),
                     name: Some("Popular Series".to_string()),
+                    extra: vec![],
                 },
             ],
             resources: vec![serde_json::json!("catalog"), serde_json::json!("meta")],
@@ -349,6 +372,7 @@ pub fn get_default_addons_config() -> AddonsConfig {
             version: "1.0.0".to_string(),
             description: Some("Official OpenSubtitles v3 subtitles provider".to_string()),
             types: vec!["movie".to_string(), "series".to_string()],
+            id_prefixes: vec!["tt".to_string()],
             catalogs: vec![],
             resources: vec![serde_json::json!("subtitles")],
         },

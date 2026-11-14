@@ -6,11 +6,17 @@ mod container_meta;
 mod engine;
 mod gui;
 mod logger;
+mod net;
 mod player;
+mod redact;
+mod sources;
 mod state;
 mod subtitles;
 mod trackers;
 mod ui;
+
+#[cfg(test)]
+mod tests;
 
 use logger::{log_err, log_info};
 

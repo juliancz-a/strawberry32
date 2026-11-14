@@ -156,6 +156,28 @@ pub fn set_seek_base_offset_ms(offset_ms: u64) {
     SEEK_BASE_OFFSET_MS.store(offset_ms, Ordering::SeqCst);
 }
 
+fn is_jellyfin_transcode_url(url: &str) -> bool {
+    url.contains("/Videos/") && url.contains("MediaSourceId=") && url.contains("VideoCodec=")
+}
+
+fn rebuild_jellyfin_seek_url(url: &str, start_ticks: u64) -> String {
+    let mut base = url.to_string();
+    if let Some(pos) = base.find("&StartTimeTicks=") {
+        let rest = &base[pos + 1..];
+        let end = rest.find('&').map(|i| pos + 1 + i).unwrap_or(base.len());
+        base.replace_range(pos..end, "");
+    }
+    if start_ticks > 0 {
+        if base.contains('?') {
+            format!("{}&StartTimeTicks={}", base, start_ticks)
+        } else {
+            format!("{}?StartTimeTicks={}", base, start_ticks)
+        }
+    } else {
+        base
+    }
+}
+
 pub fn ensure_mf_started() {
     let mut guard = MF_INITIALIZED.lock().unwrap();
     if !*guard {
@@ -238,7 +260,7 @@ pub fn init_embedded_player(video_hwnd: HWND, stream_url: &str) -> Result<(), St
         || lower_url.contains(".webm")
         || IS_MKV_STREAM.load(Ordering::SeqCst);
     IS_MKV_STREAM.store(is_mkv, Ordering::SeqCst);
-    if !stream_url.contains("start=") {
+    if !stream_url.contains("start=") && !stream_url.contains("StartTimeTicks=") {
         SEEK_BASE_OFFSET_MS.store(0, Ordering::SeqCst);
     }
 
@@ -483,7 +505,7 @@ pub fn seek_relative(seconds: i32) -> Result<(), String> {
             let _ = com_call_2(state.p_player, 8, &GUID_NULL as *const GUID as *const c_void, &mut pv_cur as *mut PROPVARIANT as *mut c_void);
             let _ = com_call_2(state.p_player, 9, &GUID_NULL as *const GUID as *const c_void, &mut pv_dur as *mut PROPVARIANT as *mut c_void);
 
-            let cur_100ns = pv_cur.hVal;
+            let cur_100ns = pv_cur.hVal + (SEEK_BASE_OFFSET_MS.load(Ordering::SeqCst) as i64) * 10_000;
             let mut dur_100ns = pv_dur.hVal;
             if dur_100ns <= 0 {
                 let known_ms = KNOWN_DURATION_MS.load(Ordering::SeqCst);
@@ -499,9 +521,22 @@ pub fn seek_relative(seconds: i32) -> Result<(), String> {
             let mut pv_new = PROPVARIANT::default();
             pv_new.vt = 20; // VT_I8
             pv_new.hVal = new_pos;
-            let _ = com_call_2(state.p_player, 7, &GUID_NULL as *const GUID as *const c_void, &pv_new as *const PROPVARIANT as *const c_void);
-            log_player(&format!("Seeked relative: {}s", seconds));
-            Ok(())
+            let hr_seek = com_call_2(state.p_player, 7, &GUID_NULL as *const GUID as *const c_void, &pv_new as *const PROPVARIANT as *const c_void);
+            if hr_seek >= 0 {
+                log_player(&format!("Seeked relative: {}s", seconds));
+                return Ok(());
+            }
+            let video_hwnd = state.video_hwnd;
+            let current_url = CURRENT_STREAM_URL.lock().unwrap().clone();
+            if is_jellyfin_transcode_url(&current_url) {
+                let target_ms = (new_pos / 10_000).max(0) as u64;
+                drop(guard);
+                let new_url = rebuild_jellyfin_seek_url(&current_url, target_ms * 10_000);
+                SEEK_BASE_OFFSET_MS.store(target_ms, Ordering::SeqCst);
+                log_player(&format!("[JELLYFIN SEEK RELATIVE] Reconnecting at {} ms (hr=0x{:08X})", target_ms, hr_seek as u32));
+                return init_embedded_player(video_hwnd, &new_url);
+            }
+            Err(format!("SetPosition failed: 0x{:08X}", hr_seek as u32))
         }
     } else {
         Err("No active player".to_string())
@@ -590,9 +625,22 @@ pub fn seek_percent(pct: f32) -> Result<(), String> {
             let mut pv_new = PROPVARIANT::default();
             pv_new.vt = 20; // VT_I8
             pv_new.hVal = target_100ns;
-            let _ = com_call_2(state.p_player, 7, &GUID_NULL as *const GUID as *const c_void, &pv_new as *const PROPVARIANT as *const c_void);
-            log_player(&format!("Seeked to percent: {:.1}%", pct_clamped * 100.0));
-            Ok(())
+            let hr_seek = com_call_2(state.p_player, 7, &GUID_NULL as *const GUID as *const c_void, &pv_new as *const PROPVARIANT as *const c_void);
+            if hr_seek >= 0 {
+                log_player(&format!("Seeked to percent: {:.1}%", pct_clamped * 100.0));
+                return Ok(());
+            }
+            let video_hwnd = state.video_hwnd;
+            let current_url = CURRENT_STREAM_URL.lock().unwrap().clone();
+            if is_jellyfin_transcode_url(&current_url) {
+                let target_ms = (target_100ns / 10_000).max(0) as u64;
+                drop(guard);
+                let new_url = rebuild_jellyfin_seek_url(&current_url, target_ms * 10_000);
+                SEEK_BASE_OFFSET_MS.store(target_ms, Ordering::SeqCst);
+                log_player(&format!("[JELLYFIN SEEK PERCENT] Reconnecting at {} ms (pct: {:.1}%, hr=0x{:08X})", target_ms, pct_clamped * 100.0, hr_seek as u32));
+                return init_embedded_player(video_hwnd, &new_url);
+            }
+            Err(format!("SetPosition failed: 0x{:08X}", hr_seek as u32))
         }
     } else {
         Err("No active player".to_string())

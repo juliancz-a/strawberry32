@@ -46,6 +46,36 @@ static NEXT_EPISODE_TARGET: Mutex<Option<(u32, u32)>> = Mutex::new(None);
 static AUTOPLAY_TRIGGERED: Mutex<bool> = Mutex::new(false);
 static HOME_RAW_ROWS: Mutex<Vec<Vec<addons::MetaItem>>> = Mutex::new(Vec::new());
 static HOME_ROW_OFFSETS: Mutex<[usize; 6]> = Mutex::new([0; 6]);
+static SEARCH_JELLYFIN_ONLY: Mutex<bool> = Mutex::new(false);
+static PLAYBACK_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn fetch_all_streams_with_jellyfin(
+    item_type: &str,
+    id: &str,
+    title: Option<&str>,
+    year: Option<&str>,
+    season: u32,
+    episode: u32,
+) -> Vec<addons::CompatibleStream> {
+    if id.starts_with("jellyfin:") {
+        return crate::sources::jellyfin::fetch_streams(item_type, id, season, episode)
+            .unwrap_or_default();
+    }
+    let mut combined = Vec::new();
+    if let Some(jf_id) = crate::sources::jellyfin::find_jellyfin_id_for_meta(
+        id,
+        title.unwrap_or(""),
+        year,
+        item_type,
+    ) {
+        if let Ok(jf_streams) = crate::sources::jellyfin::fetch_streams(item_type, &jf_id, season, episode) {
+            combined.extend(jf_streams);
+        }
+    }
+    let addon_streams = addons::fetch_streams(item_type, id, season, episode).unwrap_or_default();
+    combined.extend(addon_streams);
+    combined
+}
 
 pub fn compute_cards_per_page(ui: &MainWindow) -> usize {
     let settings = state::load_settings();
@@ -772,6 +802,7 @@ pub fn refresh_settings(ui: &MainWindow) {
         .addons
         .into_iter()
         .map(|a| AddonItem {
+            host: crate::redact::extract_host(&a.transport_url).into(),
             id: a.manifest.id.into(),
             name: a.manifest.name.into(),
             version: a.manifest.version.into(),
@@ -780,6 +811,17 @@ pub fn refresh_settings(ui: &MainWindow) {
         })
         .collect();
     ui.set_settings_addon_items(ModelRc::from(Rc::new(VecModel::from(addon_models))));
+
+    let jf_models: Vec<JellyfinServerItem> = crate::sources::jellyfin::config::load_jellyfin_servers()
+        .into_iter()
+        .map(|s| JellyfinServerItem {
+            id: s.id.into(),
+            name: s.name.into(),
+            host: crate::redact::extract_host(&s.server_url).into(),
+            username: s.username.into(),
+        })
+        .collect();
+    ui.set_settings_jellyfin_servers(ModelRc::from(Rc::new(VecModel::from(jf_models))));
 }
 
 fn convert_streams_to_models(streams: &[addons::CompatibleStream]) -> Vec<StreamItem> {
@@ -787,7 +829,13 @@ fn convert_streams_to_models(streams: &[addons::CompatibleStream]) -> Vec<Stream
         .iter()
         .enumerate()
         .map(|(i, s)| {
-            let (badge_text, color) = if s.is_mp4 {
+            let (badge_text, color) = if let Some(mode) = s.playback_mode.as_deref() {
+                if mode == "Direct" {
+                    ("[Direct]", slint::Color::from_rgb_u8(16, 185, 129))
+                } else {
+                    ("[Server transcode]", slint::Color::from_rgb_u8(245, 158, 11))
+                }
+            } else if s.is_mp4 {
                 ("[★ MP4 NATIVE]", slint::Color::from_rgb_u8(16, 185, 129))
             } else if s.audio_codec == "AAC" {
                 ("[★ MKV AAC]", slint::Color::from_rgb_u8(6, 182, 212))
@@ -799,6 +847,7 @@ fn convert_streams_to_models(streams: &[addons::CompatibleStream]) -> Vec<Stream
                 ("[MKV H264]", slint::Color::from_rgb_u8(100, 116, 139))
             };
 
+            let is_jellyfin = s.playback_mode.is_some();
             StreamItem {
                 idx: i as i32,
                 display_title: s.display_title.clone().into(),
@@ -809,6 +858,7 @@ fn convert_streams_to_models(streams: &[addons::CompatibleStream]) -> Vec<Stream
                 audio_codec: s.audio_codec.clone().into(),
                 seeders: s.seeders as i32,
                 is_mp4: s.is_mp4,
+                is_jellyfin,
             }
         })
         .collect()
@@ -837,6 +887,10 @@ pub fn load_multi_row_home_catalog(app_weak: slint::Weak<MainWindow>) {
 
     let app_weak2 = app_weak.clone();
     std::thread::spawn(move || {
+        // Warm Jellyfin availability index in the background without overwriting Cinemeta home rows
+        std::thread::spawn(|| {
+            let _ = crate::sources::jellyfin::fetch_home_rows();
+        });
         // Fetch 6 distinct real catalogs from Cinemeta
         let r1 = addons::fetch_cinemeta_catalog("movie", "top", None).unwrap_or_default();
         let r2 = addons::fetch_cinemeta_catalog("series", "top", None).unwrap_or_default();
@@ -1036,6 +1090,8 @@ fn apply_stream_filters(ui: &MainWindow) {
         filtered.retain(|s| s.is_mp4);
     } else if fmt == "mkv" {
         filtered.retain(|s| !s.is_mp4);
+    } else if fmt == "jellyfin" {
+        filtered.retain(|s| s.playback_mode.is_some());
     }
 
     if res == "1080p" {
@@ -1166,8 +1222,19 @@ pub fn run_app() -> Result<(), String> {
             ui.set_status_text(format!("Searching for '{}'...", query_str).into());
         }
 
+        let jellyfin_only = *SEARCH_JELLYFIN_ONLY.lock().unwrap();
         std::thread::spawn(move || {
-            let results = addons::search_cinemeta(&query_str, None).unwrap_or_default();
+            let jf_results = crate::sources::jellyfin::search_all_servers(&query_str, None, None, false);
+            let cm_results = if query_str.trim().is_empty() && jellyfin_only {
+                Vec::new()
+            } else {
+                addons::search_cinemeta(&query_str, None).unwrap_or_default()
+            };
+            let results = crate::sources::jellyfin::deduplicate_search_results(
+                cm_results,
+                jf_results,
+                jellyfin_only,
+            );
             let mut movies: Vec<addons::MetaItem> = Vec::new();
             let mut series: Vec<addons::MetaItem> = Vec::new();
 
@@ -1226,6 +1293,17 @@ pub fn run_app() -> Result<(), String> {
         *SEARCH_SORT_ASC.lock().unwrap() = asc;
         if let Some(ui) = app_weak_s_order.upgrade() {
             apply_search_filters(&ui);
+        }
+    });
+
+    let app_weak_jf_only = app.as_weak();
+    app.on_search_jellyfin_only_toggled(move |jf_only| {
+        *SEARCH_JELLYFIN_ONLY.lock().unwrap() = jf_only;
+        if let Some(ui) = app_weak_jf_only.upgrade() {
+            let q = ui.get_search_text();
+            if !q.is_empty() || jf_only {
+                ui.invoke_search_submitted(q);
+            }
         }
     });
 
@@ -1341,26 +1419,144 @@ pub fn run_app() -> Result<(), String> {
         let u_str = url.to_string();
         let app_weak2 = app_weak_inst.clone();
         std::thread::spawn(move || {
-            match addons::install_addon_from_url(&u_str) {
-                Ok(desc) => {
+            match addons::install_addon_from_url_with_warning(&u_str) {
+                Ok((desc, warning)) => {
                     log_info(&format!("Add-on '{}' installed successfully.", desc.manifest.name));
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_weak2.upgrade() {
                             refresh_settings(&ui);
-                            ui.set_status_text(format!("Add-on '{}' installed.", desc.manifest.name).into());
+                            if let Some(w) = warning {
+                                ui.set_status_text(format!("Add-on '{}' installed. Warning: {}", desc.manifest.name, w).into());
+                            } else {
+                                ui.set_status_text(format!("Add-on '{}' installed.", desc.manifest.name).into());
+                            }
                         }
                     });
                 }
                 Err(err) => {
-                    log_err(&format!("Failed installing add-on: {}", err));
+                    let safe_err = crate::redact::redact_secrets(&err);
+                    log_err(&format!("Failed installing add-on: {}", safe_err));
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_weak2.upgrade() {
-                            ui.set_status_text(format!("Error installing add-on: {}", err).into());
+                            ui.set_status_text(format!("Error installing add-on: {}", safe_err).into());
                         }
                     });
                 }
             }
         });
+    });
+
+    // --- Jellyfin Native Source Callbacks ---
+    let app_weak_jf_test = app.as_weak();
+    app.on_settings_jellyfin_test(move |url| {
+        let u_str = url.to_string();
+        let aw = app_weak_jf_test.clone();
+        if let Some(ui) = aw.upgrade() {
+            ui.set_settings_jellyfin_status("Testing connection...".into());
+        }
+        std::thread::spawn(move || {
+            let msg = match crate::sources::jellyfin::client::test_connection(&u_str) {
+                Ok(info) => format!("Connected: {} (Jellyfin {})", info.server_name, info.version),
+                Err(e) => format!("Connection failed: {}", e),
+            };
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = aw.upgrade() {
+                    ui.set_settings_jellyfin_status(msg.into());
+                }
+            });
+        });
+    });
+
+    let app_weak_jf_conn = app.as_weak();
+    app.on_settings_jellyfin_connect(move |url, user, pass| {
+        let u_str = url.to_string();
+        let usr = user.to_string();
+        let pwd = pass.to_string();
+        let aw = app_weak_jf_conn.clone();
+        if let Some(ui) = aw.upgrade() {
+            ui.set_settings_jellyfin_status("Signing in to Jellyfin...".into());
+        }
+        std::thread::spawn(move || {
+            match crate::sources::jellyfin::client::authenticate_by_name(&u_str, &usr, &pwd) {
+                Ok(srv) => {
+                    let name = srv.name.clone();
+                    crate::sources::jellyfin::config::add_or_update_jellyfin_server(srv);
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = aw.upgrade() {
+                            refresh_settings(&ui);
+                            ui.set_settings_jellyfin_status(format!("Connected to '{}'.", name).into());
+                            load_multi_row_home_catalog(aw.clone());
+                        }
+                    });
+                }
+                Err(e) => {
+                    let safe_err = crate::redact::redact_secrets(&e);
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = aw.upgrade() {
+                            ui.set_settings_jellyfin_status(format!("Sign-in failed: {}", safe_err).into());
+                        }
+                    });
+                }
+            }
+        });
+    });
+
+    let app_weak_jf_qc = app.as_weak();
+    app.on_settings_jellyfin_quick_connect(move |url| {
+        let u_str = url.to_string();
+        let aw = app_weak_jf_qc.clone();
+        std::thread::spawn(move || {
+            match crate::sources::jellyfin::client::quick_connect_initiate(&u_str) {
+                Ok((qc, dev_id)) => {
+                    let code = qc.code.clone();
+                    let secret = qc.secret.clone();
+                    let aw_poll = aw.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = aw_poll.upgrade() {
+                            ui.set_settings_jellyfin_status(format!("Quick Connect code: {} — authorize in Jellyfin...", code).into());
+                        }
+                    });
+                    for _ in 0..30 {
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        if let Ok(Some(srv)) = crate::sources::jellyfin::client::quick_connect_poll_and_auth(&u_str, &secret, &dev_id) {
+                            let name = srv.name.clone();
+                            crate::sources::jellyfin::config::add_or_update_jellyfin_server(srv);
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = aw.upgrade() {
+                                    refresh_settings(&ui);
+                                    ui.set_settings_jellyfin_status(format!("Quick Connect succeeded for '{}'.", name).into());
+                                    load_multi_row_home_catalog(aw.clone());
+                                }
+                            });
+                            return;
+                        }
+                    }
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = aw.upgrade() {
+                            ui.set_settings_jellyfin_status("Quick Connect timed out.".into());
+                        }
+                    });
+                }
+                Err(e) => {
+                    let safe_err = crate::redact::redact_secrets(&e);
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = aw.upgrade() {
+                            ui.set_settings_jellyfin_status(format!("Quick Connect unavailable: {}", safe_err).into());
+                        }
+                    });
+                }
+            }
+        });
+    });
+
+    let app_weak_jf_rm = app.as_weak();
+    app.on_settings_jellyfin_remove(move |id| {
+        crate::sources::jellyfin::config::remove_jellyfin_server(&id);
+        if let Some(ui) = app_weak_jf_rm.upgrade() {
+            refresh_settings(&ui);
+            ui.set_settings_jellyfin_status("Server removed.".into());
+            load_multi_row_home_catalog(app_weak_jf_rm.clone());
+        }
     });
 
     let app_weak_tgl = app.as_weak();
@@ -1695,16 +1891,37 @@ pub fn run_app() -> Result<(), String> {
                     let is_ser = d.item_type == "series";
                     let s_streams = if is_ser {
                         *CURRENT_SERIES_VIDEOS.lock().unwrap() = d.videos.clone();
-                        addons::fetch_streams("series", &id_str_meta, 1, 1).unwrap_or_default()
+                        fetch_all_streams_with_jellyfin(
+                            "series",
+                            &id_str_meta,
+                            Some(&d.name),
+                            d.year.as_deref(),
+                            1,
+                            1,
+                        )
                     } else {
-                        addons::fetch_streams("movie", &id_str_meta, 1, 1).unwrap_or_default()
+                        fetch_all_streams_with_jellyfin(
+                            "movie",
+                            &id_str_meta,
+                            Some(&d.name),
+                            d.year.as_deref(),
+                            1,
+                            1,
+                        )
                     };
 
                     (Some(d), s_streams)
                 }
                 Err(e) => {
                     log_err(&format!("Error fetching meta detail: {}", e));
-                    let s_streams = addons::fetch_streams(&type_str_meta, &id_str_meta, 1, 1).unwrap_or_default();
+                    let s_streams = fetch_all_streams_with_jellyfin(
+                        &type_str_meta,
+                        &id_str_meta,
+                        None,
+                        None,
+                        1,
+                        1,
+                    );
                     (None, s_streams)
                 }
             };
@@ -1836,9 +2053,24 @@ pub fn run_app() -> Result<(), String> {
             ui.set_status_text(format!("Fetching streams for S{}E{}...", season, episode).into());
         }
 
+        let (detail_title_opt, detail_year_opt) = if let Some(ui) = app_weak.upgrade() {
+            (
+                Some(ui.get_detail_title().to_string()),
+                Some(ui.get_detail_year().to_string()),
+            )
+        } else {
+            (None, None)
+        };
         let app_weak2 = app_weak.clone();
         std::thread::spawn(move || {
-            let streams = addons::fetch_streams("series", &id_s, season as u32, episode as u32).unwrap_or_default();
+            let streams = fetch_all_streams_with_jellyfin(
+                "series",
+                &id_s,
+                detail_title_opt.as_deref(),
+                detail_year_opt.as_deref(),
+                season as u32,
+                episode as u32,
+            );
             *CURRENT_RAW_STREAMS.lock().unwrap() = streams.clone();
             *CURRENT_STREAMS.lock().unwrap() = streams.clone();
 
@@ -1869,10 +2101,24 @@ pub fn run_app() -> Result<(), String> {
             engine::stop_active_stream();
             destroy_video_hwnd();
 
-            // Set loading state in engine
+            // Clear previous subtitle tracks so stale subtitles never bleed into the new stream
+            *SUBTITLE_TRACKS.lock().unwrap() = Vec::new();
+            subtitles::set_active_subtitles(Vec::new(), "");
+
+            // Set loading state in engine and advance playback generation to cancel any stale in-flight torrent start
+            let my_playback_gen = PLAYBACK_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
             engine::set_stream_loading(&stream.display_title);
 
-            let (ui_detail_id, ui_detail_type, ui_season, ui_episode) = if let Some(ui) = app_weak.upgrade() {
+            if stream.playback_mode.is_some() {
+                if let Some(ui) = app_weak.upgrade() {
+                    let rt_str = ui.get_detail_runtime().to_string();
+                    if let Some(mins) = rt_str.split_whitespace().next().and_then(|n| n.parse::<u64>().ok()) {
+                        player::set_known_duration_ms(mins * 60_000);
+                    }
+                }
+            }
+
+            let (ui_detail_id, ui_detail_type, ui_detail_title, ui_detail_year, ui_season, ui_episode) = if let Some(ui) = app_weak.upgrade() {
                 ui.set_current_view(2); // Switch directly to Player view!
                 ui.set_is_player_loading(true);
                 ui.set_player_has_error(false);
@@ -1886,11 +2132,13 @@ pub fn run_app() -> Result<(), String> {
                 (
                     ui.get_detail_id().to_string(),
                     ui.get_detail_type().to_string(),
+                    ui.get_detail_title().to_string(),
+                    ui.get_detail_year().to_string(),
                     ui.get_selected_season() as u32,
                     ui.get_selected_episode() as u32,
                 )
             } else {
-                (String::new(), String::new(), 1, 1)
+                (String::new(), String::new(), String::new(), String::new(), 1, 1)
             };
 
             // Record watch progress in persistent watch history
@@ -1916,25 +2164,43 @@ pub fn run_app() -> Result<(), String> {
                     (None, None)
                 };
 
-                match engine::start_stream_sync(
-                    stream_clone.info_hash.clone(),
-                    stream_clone.file_idx,
-                    stream_season,
-                    stream_episode,
-                    stream_clone.trackers.clone(),
-                ) {
+                let stream_res = if let Some(direct_url) = stream_clone.stream_url.clone() {
+                    Ok(direct_url)
+                } else {
+                    engine::start_stream_sync(
+                        stream_clone.info_hash.clone(),
+                        stream_clone.file_idx,
+                        stream_season,
+                        stream_episode,
+                        stream_clone.trackers.clone(),
+                    )
+                };
+
+                match stream_res {
                     Ok(proxy_url) => {
+                        if PLAYBACK_GENERATION.load(std::sync::atomic::Ordering::SeqCst) != my_playback_gen {
+                            log_player("Ignoring stale stream result because playback was cancelled or superseded.");
+                            return;
+                        }
                         *ACTIVE_STREAM_URL.lock().unwrap() = proxy_url.clone();
-                        log_player(&format!("Stream ready at {}. Initializing embedded player on UI thread...", proxy_url));
+                        log_player(&format!("Stream ready at {}. Initializing embedded player on UI thread...", crate::redact::redact_url(&proxy_url)));
 
                         // Spawn subtitle discovery AFTER stream sync succeeds when video hash & bundled subs are known
                         if !ui_detail_id.is_empty() {
                             let sub_type = ui_detail_type.clone();
                             let sub_id = ui_detail_id.clone();
+                            let sub_title = ui_detail_title.clone();
+                            let sub_year = ui_detail_year.clone();
+                            let is_direct_stream = stream_clone.stream_url.is_some();
+                            let is_jellyfin_stream = stream_clone.playback_mode.is_some();
                             std::thread::spawn(move || {
-                                let (v_hash, v_size) = crate::engine::get_current_video_hash()
-                                    .map(|(h, s)| (Some(h), Some(s)))
-                                    .unwrap_or((None, None));
+                                let (v_hash, v_size) = if !is_direct_stream {
+                                    crate::engine::get_current_video_hash()
+                                        .map(|(h, s)| (Some(h), Some(s)))
+                                        .unwrap_or((None, None))
+                                } else {
+                                    (None, None)
+                                };
 
                                 let mut tracks = subtitles::fetch_subtitle_tracks(
                                     &sub_type,
@@ -1945,19 +2211,38 @@ pub fn run_app() -> Result<(), String> {
                                     v_size,
                                 ).unwrap_or_default();
 
-                                // Inject bundled torrent subtitles if found
-                                let bundled = crate::engine::get_bundled_subtitles();
-                                for b in bundled {
-                                    let local_url = format!("http://127.0.0.1:3030/torrents/0/stream/{}", b.file_idx);
-                                    let clean_name = subtitles::clean_language_name(&b.lang);
-                                    let badge = subtitles::get_sub_format_badge(&local_url);
-                                    tracks.insert(0, state::SubtitleTrack {
-                                        id: format!("bundled_{}", b.file_idx),
-                                        lang: clean_name.clone(),
-                                        label: format!("{} [Embedded] {}", clean_name, badge),
-                                        source: "embedded".to_string(),
-                                        url: local_url,
-                                    });
+                                // If playing a Jellyfin stream from a Cinemeta/IMDb card, also include Jellyfin's own subtitles
+                                if is_jellyfin_stream && !sub_id.starts_with("jellyfin:") {
+                                    let year_opt = if sub_year.is_empty() { None } else { Some(sub_year.as_str()) };
+                                    if let Some(jf_id) = crate::sources::jellyfin::find_jellyfin_id_for_meta(
+                                        &sub_id,
+                                        &sub_title,
+                                        year_opt,
+                                        &sub_type,
+                                    ) {
+                                        let s_opt = if sub_type == "series" { Some(ui_season) } else { None };
+                                        let e_opt = if sub_type == "series" { Some(ui_episode) } else { None };
+                                        let mut jf_tracks = crate::sources::jellyfin::fetch_subtitles_for_item(&jf_id, s_opt, e_opt);
+                                        jf_tracks.extend(tracks);
+                                        tracks = jf_tracks;
+                                    }
+                                }
+
+                                // Inject bundled torrent subtitles only for torrent streams
+                                if !is_direct_stream {
+                                    let bundled = crate::engine::get_bundled_subtitles();
+                                    for b in bundled {
+                                        let local_url = format!("http://127.0.0.1:3030/torrents/0/stream/{}", b.file_idx);
+                                        let clean_name = subtitles::clean_language_name(&b.lang);
+                                        let badge = subtitles::get_sub_format_badge(&local_url);
+                                        tracks.insert(0, state::SubtitleTrack {
+                                            id: format!("bundled_{}", b.file_idx),
+                                            lang: clean_name.clone(),
+                                            label: format!("{} [Embedded] {}", clean_name, badge),
+                                            source: "embedded".to_string(),
+                                            url: local_url,
+                                        });
+                                    }
                                 }
 
                                 *SUBTITLE_TRACKS.lock().unwrap() = tracks.clone();
@@ -2112,6 +2397,7 @@ pub fn run_app() -> Result<(), String> {
                                                 let app_weak_close = app_weak2.clone();
                                                 let info_hash_for_close = stream_clone.info_hash.clone();
                                                 overlay.on_close_clicked(move || {
+                                                    PLAYBACK_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                                                     crate::ui::overlay::hide_overlay();
                                                     engine::cancel_stream_loading();
                                                     engine::stop_active_stream();
@@ -2120,7 +2406,7 @@ pub fn run_app() -> Result<(), String> {
 
                                                     // Phase 5: Delete torrent payload after playback if keep_after_playback is false
                                                     let settings = state::load_settings();
-                                                    if !settings.cache.keep_after_playback {
+                                                    if !settings.cache.keep_after_playback && !info_hash_for_close.is_empty() {
                                                         let hash = info_hash_for_close.clone();
                                                         std::thread::spawn(move || {
                                                             std::thread::sleep(std::time::Duration::from_millis(500));
@@ -2359,6 +2645,7 @@ pub fn run_app() -> Result<(), String> {
     // 12. Player Back clicked
     let app_weak = app.as_weak();
     app.on_player_back(move || {
+        PLAYBACK_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         crate::ui::overlay::hide_overlay();
         engine::cancel_stream_loading();
         engine::stop_active_stream();
@@ -2477,6 +2764,7 @@ pub fn run_app() -> Result<(), String> {
                     }
                 }
             } else if ui.get_current_view() == 2 {
+                PLAYBACK_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 crate::ui::overlay::hide_overlay();
                 engine::cancel_stream_loading();
                 engine::stop_active_stream();
