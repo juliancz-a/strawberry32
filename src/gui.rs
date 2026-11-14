@@ -577,6 +577,10 @@ pub fn sync_player_layout(window: &slint::Window) {
                 | windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOACTIVATE,
         );
         player::update_video_position(0, 0, w, h);
+        windows_sys::Win32::Graphics::Gdi::InvalidateRect(v_hwnd, std::ptr::null(), 0);
+        if !ov_hwnd.is_null() {
+            windows_sys::Win32::Graphics::Gdi::InvalidateRect(ov_hwnd, std::ptr::null(), 0);
+        }
     }
 }
 
@@ -2100,6 +2104,8 @@ pub fn run_app() -> Result<(), String> {
             player::stop_embedded_player();
             engine::stop_active_stream();
             destroy_video_hwnd();
+            *LAST_PLAYER_STATE.lock().unwrap() = 0;
+            *LAST_RECT.lock().unwrap() = (0, 0, 0, 0);
 
             // Clear previous subtitle tracks so stale subtitles never bleed into the new stream
             *SUBTITLE_TRACKS.lock().unwrap() = Vec::new();
@@ -2312,30 +2318,20 @@ pub fn run_app() -> Result<(), String> {
 
                                 match player::init_embedded_player(v_hwnd, &proxy_url) {
                                     Ok(()) => {
-                                        sync_player_layout(&ui.window());
                                         // Player Overlay: launch owned borderless WS_CHILD overlay with SetWindowRgn
                                         match crate::ui::overlay::ensure_overlay(slint_hwnd, 0, 0, w, h) {
                                             Ok(overlay) => {
-                                                sync_player_layout(&ui.window());
-                                                let ov_hwnd = crate::ui::overlay::get_overlay_hwnd();
-                                                if !v_hwnd.is_null() && !ov_hwnd.is_null() {
-                                                    unsafe {
-                                                        crate::ui::overlay::position_overlay(slint_hwnd, 0, 0, w, h);
-                                                        windows_sys::Win32::UI::WindowsAndMessaging::SetWindowPos(
-                                                            v_hwnd,
-                                                            ov_hwnd,
-                                                            0,
-                                                            0,
-                                                            w,
-                                                            h,
-                                                            windows_sys::Win32::UI::WindowsAndMessaging::SWP_SHOWWINDOW
-                                                                | windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOACTIVATE,
-                                                        );
-                                                    }
+                                                // Keep overlay hidden until playback actually starts (st == 2) so loading UI isn't covered
+                                                if ui.get_is_player_loading() && player::get_player_state() < 2 {
+                                                    crate::ui::overlay::hide_overlay();
+                                                } else {
+                                                    sync_player_layout(&ui.window());
+                                                    schedule_layout_resync(app_weak2.clone());
                                                 }
 
                                                 overlay.set_title_text(stream_clone.display_title.clone().into());
                                                 overlay.set_time_str("00:00 / 00:00".into());
+                                                overlay.set_progress(0.0);
                                                 overlay.set_is_paused(false);
                                                 overlay.set_is_fullscreen(ui.window().is_fullscreen());
                                                 overlay.set_stream_info_text(format!("{} • Container: {} • Audio: {}", stream_clone.quality, stream_clone.container, stream_clone.audio_codec).into());
@@ -2875,7 +2871,10 @@ pub fn run_app() -> Result<(), String> {
                         if st == 2 || progress > 0.005 {
                             engine::finish_stream_loading();
                             ui.set_is_player_loading(false);
+                            crate::ui::overlay::show_overlay();
+                            *LAST_RECT.lock().unwrap() = (0, 0, 0, 0);
                             sync_player_layout(&ui.window());
+                            schedule_layout_resync(ui.as_weak());
                         } else {
                             ui.set_is_player_loading(true);
                             ui.set_player_loading_stage(stream_status.stage as i32);
