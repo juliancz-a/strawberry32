@@ -16,7 +16,7 @@
 
 ---
 
-## 🍓 Overview
+## Overview
 
 **Strawberry32** is a dedicated streaming entertainment media player engineered from scratch for the Microsoft Surface RT (1st Gen), Surface 2, and other 32-bit ARM (ARMv7 / `thumbv7a`) Windows RT devices. 
 
@@ -29,7 +29,7 @@ By combining **Rust**, **Slint CPU Software Rendering**, **librqbit**, and low-l
 
 ---
 
-## ✨ Features
+## Features
 
 - **⚡ Hardware-Accelerated Playback**:
   Streams video through Windows Media Foundation (`IMFPMediaPlayer`), utilizing NVIDIA Tegra 3 hardware H.264 (8-bit) decoding for fluid 720p and 1080p playback with negligible CPU load.
@@ -139,38 +139,153 @@ Strawberry32 includes a built-in native Jellyfin client (no server-side plugins 
 
 ---
 
-## 🚀 Building & Installation
+## Building & Installation
 
 ### Prerequisites
-- Windows 10/11 x64 host machine for cross-compilation (or native ARM32 developer environment).
-- Rust toolchain (`stable` or `nightly`) with target:
-  ```bash
-  rustup target add thumbv7a-pc-windows-msvc
-  ```
-- Visual Studio Build Tools with ARM build components (`MSVC v143 - VS 2022 C++ ARM build tools`).
-- LLVM / LLD linker (`cargo install -f lld` or MSVC `link.exe`).
+
+The supported build environment is a **Windows 10/11 x64 host** cross-compiling for **Windows RT 8.1 ARM32**. The compiler tools run on x64; the resulting application targets ARM32 (`thumbv7a-pc-windows-msvc`).
+
+You do **not** need to install the complete Visual Studio IDE or download a full Windows SDK if you already have the compatible headers and libraries described below.
+
+Required components:
+
+- **Rust compiler (`rustc`)**: the custom ARM32-targeting Rust toolchain package described in [Toolchain](#toolchain), including its `thumbv7a-pc-windows-msvc` standard library.
+- **Cargo**: installed separately. The custom `rustc` archive used here does not include Cargo. Ensure Cargo invokes the intended custom `rustc`.
+- **ARM32 LLVM toolchain**: hamed7ir's `rt2.1` package, providing `clang-cl`, `lld-link`, `llvm-lib`, and related tools.
+- **Windows SDK / MSVC-compatible development files**: the CRT, UCRT, and Windows SDK headers and libraries listed below.
+- **Git**: to clone the repository and fetch its source dependencies.
+
+> **Important:** `rustup target add thumbv7a-pc-windows-msvc` on an ordinary Rust installation is not a substitute for the custom Rust compiler package and target standard library used by this project.
+
+### Toolchain
+
+Strawberry32 was built on a Windows x64 host using [hamed7ir/llvm-rt1](https://github.com/hamed7ir/llvm-rt1), specifically the **rt2.1 / LLVM 23.1.1 ARM32 Windows toolchain**.
+
+- Project: https://github.com/hamed7ir/llvm-rt1
+- Toolchain directory used in the development environment:
+  `E:\arm32-tools\rt2.1-23.1.1-rt2.1-arm32-win\`
+- Tools used:
+  - `clang-cl.exe` — C/C++ compiler used by native dependencies and build scripts.
+  - `lld-link.exe` — linker for the final ARM32 executable.
+  - `llvm-lib.exe` — librarian used where native dependencies require it.
+- Rust: the matching custom `rustc` build for `thumbv7a-pc-windows-msvc` was used. Cargo was installed separately because the custom `rustc` archive did not include it.
+
+The toolchain runs on **Windows x64** and emits **32-bit ARM Windows binaries**. The `win64` host designation in the Rust compiler package refers to the machine running the compiler, not the architecture of Strawberry32.
+
+The LLVM toolchain does not itself provide the Windows SDK or MSVC CRT headers/libraries. This project used a manually assembled SDK/CRT subset under `E:\arm32-tools\winsdk\` rather than relying on a full Visual Studio installation.
+
+### Windows SDK and CRT files
+
+The build configuration expects this directory structure (the paths reproduce the development machine layout; adjust them for your installation):
+
+```text
+E:\arm32-tools\winsdk\
+├── crt\
+│   ├── include\
+│   └── lib\
+│       ├── aarch\
+│       └── x86_64\
+└── sdk\
+    ├── include\
+    │   ├── shared\
+    │   ├── um\
+    │   └── ucrt\
+    └── lib\
+        ├── ucrt\
+        │   ├── aarch\
+        │   └── x86_64\
+        └── um\
+            ├── aarch\
+            └── x86_64\
+```
+
+The two library architectures serve different compilation stages:
+
+- `aarch`: libraries used when linking the final ARM32 application.
+- `x86_64`: libraries used by host-side Windows build scripts and native build tools that execute on the development PC.
+
+Do not interchange these directories. The final application must link against ARM32 libraries, while host build scripts must link against x64 libraries.
+
+### Cargo configuration
+
+The following is the target configuration used during development. Save it as `.cargo/config.toml` in the repository root. Update the paths if your toolchain or SDK is installed elsewhere.
+
+```toml
+[build]
+target = "thumbv7a-pc-windows-msvc"
+
+[env]
+LIB = "<ARM32_TOOLS>\\winsdk\\crt\\lib\\x86_64;<ARM32_TOOLS>\\winsdk\\sdk\\lib\\um\\x86_64;<ARM32_TOOLS>\\winsdk\\sdk\\lib\\ucrt\\x86_64"
+INCLUDE = "<ARM32_TOOLS>\\winsdk\\crt\\include;<ARM32_TOOLS>\\winsdk\\sdk\\include\\ucrt;<ARM32_TOOLS>\\winsdk\\sdk\\include\\um;<ARM32_TOOLS>\\winsdk\\sdk\\include\\shared"
+CC_thumbv7a_pc_windows_msvc = "<ARM32_TOOLS>\\rt2.1-23.1.1-rt2.1-arm32-win\\bin\\clang-cl.exe"
+AR_thumbv7a_pc_windows_msvc = "<ARM32_TOOLS>\\rt2.1-23.1.1-rt2.1-arm32-win\\bin\\llvm-lib.exe"
+CFLAGS_thumbv7a_pc_windows_msvc = "--target=thumbv7a-pc-windows-msvc -D_ARM_WINAPI_PARTITION_DESKTOP_SDK_AVAILABLE=1"
+
+[target.thumbv7a-pc-windows-msvc]
+linker = "<ARM32_TOOLS>\\rt2.1-23.1.1-rt2.1-arm32-win\\bin\\lld-link.exe"
+rustflags = [
+    "-C", "target-feature=+crt-static",
+    "-C", "link-arg=/SUBSYSTEM:WINDOWS,6.03",
+    "-C", "link-arg=/LIBPATH:<ARM32_TOOLS>\\winsdk\\crt\\lib\\aarch",
+    "-C", "link-arg=/LIBPATH:<ARM32_TOOLS>\\winsdk\\sdk\\lib\\um\\aarch",
+    "-C", "link-arg=/LIBPATH:<ARM32_TOOLS>\\winsdk\\sdk\\lib\\ucrt\\aarch"
+]
+
+[target.x86_64-pc-windows-msvc]
+linker = "<ARM32_TOOLS>\\llvm-msvc-x86_64-armv7-cross\\bin\\lld-link.exe"
+rustflags = [
+    "-C", "link-arg=/LIBPATH:<ARM32_TOOLS>\\winsdk\\crt\\lib\\x86_64",
+    "-C", "link-arg=/LIBPATH:<ARM32_TOOLS>\\winsdk\\sdk\\lib\\um\\x86_64",
+    "-C", "link-arg=/LIBPATH:<ARM32_TOOLS>\\winsdk\\sdk\\lib\\ucrt\\x86_64"
+]
+```
+
+The `x86_64-pc-windows-msvc` section is for host-side build scripts (`build.rs`) that Cargo compiles and runs on the development PC. The `thumbv7a-pc-windows-msvc` section is for the final application and target-side native dependencies.
+
+> **Note:** replace every `<ARM32_TOOLS>` with the folder where you keep the toolchain and SDK/CRT subset (for example `C:\\arm32-tools`; backslashes must be doubled inside TOML double-quoted strings). Keep the ARM32 and x64 library paths separated as shown.
+
+### Verify the environment
+
+Run these commands in PowerShell after configuring `PATH` and the Rust compiler:
+
+```powershell
+rustc -vV
+cargo --version
+clang-cl --version
+lld-link --version
+llvm-lib --version
+```
+
+Confirm that `rustc -vV` reports the intended custom compiler and that its target standard library includes `thumbv7a-pc-windows-msvc`. Also verify that the LLVM commands resolve to the `rt2.1` installation, not to an unrelated LLVM installation.
 
 ### Compilation
-Clone the repository and compile the release binary:
-```bash
+
+Clone the repository and build the release binary:
+
+```powershell
 git clone https://github.com/your-username/Strawberry32.git
 cd Strawberry32
 cargo build --release --target thumbv7a-pc-windows-msvc
 ```
 
 The resulting binary will be located at:
-```
+
+```text
 target/thumbv7a-pc-windows-msvc/release/Strawberry32.exe
 ```
 
 ### Deploying to Windows RT 8.1
+
 1. Ensure your Surface RT / Windows RT device is jailbroken to run unsigned desktop applications (e.g. via the standard RT 8.1 Jailbreak / Testsigning tool).
 2. Copy `Strawberry32.exe` to a folder on your device (e.g. `C:\Strawberry32\`).
-3. Run `Strawberry32.exe`. On first launch, the app initializes its local storage in `%LOCALAPPDATA%\Strawberry32` and loads public metadata providers.
+3. Run `Strawberry32.exe`. On first launch, the app initializes its local storage in `%LOCALAPPDATA%\Strawberry32` and loads its configured metadata and add-on sources.
+
+> **Compatibility note:** this project targets ARM32 Windows, but the intended runtime is specifically Windows RT 8.1. A successful cross-compilation does not by itself guarantee runtime compatibility; validate each release on the actual Surface RT / Windows RT 8.1 device.
+
 
 ---
 
-## ⚖️ Legal & Compliance Notice
+## Legal & Compliance Notice
 
 Strawberry32 is an open-source media player and protocol client. 
 - Strawberry32 does not host, index, archive, or distribute any media files, torrents, or streams.
@@ -180,7 +295,7 @@ Strawberry32 is an open-source media player and protocol client.
 
 ---
 
-## 📜 Licensing
+## Licensing
 
 This project is licensed under the **GNU General Public License v3.0 (GPLv3)**.
 
@@ -193,7 +308,7 @@ Because Slint is linked into the application under the terms of the GNU General 
 
 ---
 
-## 🙏 Credits & Acknowledgments
+## Credits & Acknowledgments
 
 - **Slint**: Beautiful, efficient native GUI toolkit developed by [Slint Software](https://slint.dev/).
 - **librqbit**: Lightweight BitTorrent client library written in Rust by [ikatson](https://github.com/ikatson/rqbit).
