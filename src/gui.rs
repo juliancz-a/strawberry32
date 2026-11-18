@@ -2238,7 +2238,7 @@ pub fn run_app() -> Result<(), String> {
                                 if !is_direct_stream {
                                     let bundled = crate::engine::get_bundled_subtitles();
                                     for b in bundled {
-                                        let local_url = format!("http://127.0.0.1:3030/torrents/0/stream/{}", b.file_idx);
+                                        let local_url = format!("http://127.0.0.1:{}/torrents/0/stream/{}", crate::engine::http_api_port(), b.file_idx);
                                         let clean_name = subtitles::clean_language_name(&b.lang);
                                         let badge = subtitles::get_sub_format_badge(&local_url);
                                         tracks.insert(0, state::SubtitleTrack {

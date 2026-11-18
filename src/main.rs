@@ -164,7 +164,72 @@ fn attach_console_if_requested() {
     }
 }
 
+struct SingleInstanceGuard {
+    handle: windows_sys::Win32::Foundation::HANDLE,
+}
+
+impl Drop for SingleInstanceGuard {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(self.handle);
+            }
+        }
+    }
+}
+
+fn to_wide_null(s: &str) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    std::ffi::OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+}
+
+fn show_message_box(title: &str, text: &str, flags: u32) {
+    let title_w = to_wide_null(title);
+    let text_w = to_wide_null(text);
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
+            std::ptr::null_mut(),
+            text_w.as_ptr(),
+            title_w.as_ptr(),
+            flags,
+        );
+    }
+}
+
+fn acquire_single_instance_guard() -> Option<SingleInstanceGuard> {
+    let mutex_name = to_wide_null("Local\\Strawberry32_SingleInstance_Mutex");
+    unsafe {
+        let handle = windows_sys::Win32::System::Threading::CreateMutexW(
+            std::ptr::null(),
+            0,
+            mutex_name.as_ptr(),
+        );
+        if handle.is_null() {
+            return Some(SingleInstanceGuard { handle: std::ptr::null_mut() });
+        }
+        if windows_sys::Win32::Foundation::GetLastError() == windows_sys::Win32::Foundation::ERROR_ALREADY_EXISTS {
+            windows_sys::Win32::Foundation::CloseHandle(handle);
+            return None;
+        }
+        Some(SingleInstanceGuard { handle })
+    }
+}
+
 fn main() {
+    // Ensure only one Strawberry32 instance runs at a time to avoid port & DHT lock conflicts
+    let _instance_guard = match acquire_single_instance_guard() {
+        Some(g) => g,
+        None => {
+            show_message_box(
+                "Strawberry32",
+                "Strawberry32 is already running. Please close the existing instance before opening another.",
+                windows_sys::Win32::UI::WindowsAndMessaging::MB_OK
+                    | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONINFORMATION,
+            );
+            std::process::exit(0);
+        }
+    };
+
     // Check opt-in --console CLI flag
     attach_console_if_requested();
 
@@ -220,6 +285,15 @@ fn main() {
     log_info("Starting librqbit 8.0 streaming engine on background thread...");
     if let Err(e) = engine::start_engine() {
         log_err(&format!("Critical error starting librqbit engine: {}", e));
+        show_message_box(
+            "Strawberry32 - Torrent Engine Error",
+            &format!(
+                "The torrent streaming engine failed to initialize:\n\n{}\n\nYou can still browse catalogs, but torrent playback will be unavailable.",
+                e
+            ),
+            windows_sys::Win32::UI::WindowsAndMessaging::MB_OK
+                | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONWARNING,
+        );
     }
 
     // 4. Initialize live tracker manager (24h RTT probe & cache)

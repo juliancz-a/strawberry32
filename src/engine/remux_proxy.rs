@@ -2,7 +2,7 @@ use crate::logger::{log_err, log_torrent};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -14,7 +14,12 @@ pub struct FileMeta {
 
 static FILE_REGISTRY: OnceLock<Mutex<HashMap<(usize, usize), FileMeta>>> = OnceLock::new();
 static PROXY_STARTED: OnceLock<bool> = OnceLock::new();
+static PROXY_PORT: AtomicU16 = AtomicU16::new(3031);
 static STREAM_GEN_ID: AtomicU64 = AtomicU64::new(0);
+
+pub fn proxy_port() -> u16 {
+    PROXY_PORT.load(Ordering::Relaxed)
+}
 
 pub fn bump_stream_generation() -> u64 {
     STREAM_GEN_ID.fetch_add(1, Ordering::SeqCst) + 1
@@ -53,14 +58,28 @@ pub fn start_proxy_server() -> Result<(), String> {
     if PROXY_STARTED.get().is_some() {
         return Ok(());
     }
-    let listener = TcpListener::bind("127.0.0.1:3031")
-        .map_err(|e| format!("No se pudo abrir proxy en 127.0.0.1:3031: {}", e))?;
+    let listener = match TcpListener::bind("127.0.0.1:3031") {
+        Ok(l) => l,
+        Err(first_err) => {
+            log_err(&format!(
+                "Port 3031 unavailable ({}), falling back to ephemeral port...",
+                first_err
+            ));
+            TcpListener::bind("127.0.0.1:0")
+                .map_err(|e| format!("No se pudo abrir proxy en 127.0.0.1:0: {}", e))?
+        }
+    };
+    let bound_port = listener.local_addr().map(|a| a.port()).unwrap_or(3031);
+    PROXY_PORT.store(bound_port, Ordering::Relaxed);
     let _ = PROXY_STARTED.set(true);
 
     std::thread::Builder::new()
         .name("mf-remux-proxy".to_string())
         .spawn(move || {
-            log_torrent("[PROXY] Servidor HTTP/fMP4 para Media Foundation activo en http://127.0.0.1:3031");
+            log_torrent(&format!(
+                "[PROXY] Servidor HTTP/fMP4 para Media Foundation activo en http://127.0.0.1:{}",
+                bound_port
+            ));
             for stream in listener.incoming().flatten() {
                 // Cada conexión de Media Foundation DEBE correr en su propio hilo
                 // porque MF abre una 2da conexión paralela para buscar el átomo 'moov' al final
@@ -203,8 +222,10 @@ fn handle_client(mut client: TcpStream) -> Result<(), String> {
         || file_name.to_lowercase().ends_with(".webm");
 
     let upstream_url = format!(
-        "http://127.0.0.1:3030/torrents/{}/stream/{}",
-        torrent_id, file_idx
+        "http://127.0.0.1:{}/torrents/{}/stream/{}",
+        crate::engine::http_api_port(),
+        torrent_id,
+        file_idx
     );
 
     let (start, end, is_partial) = if let Some(ref r) = range_header {

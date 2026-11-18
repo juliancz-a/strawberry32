@@ -11,9 +11,21 @@ use librqbit::{
 };
 use std::io::Read;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
+
+static HTTP_API_PORT: AtomicU16 = AtomicU16::new(3030);
+static ENGINE_STARTUP_ERROR: OnceLock<String> = OnceLock::new();
+
+pub fn http_api_port() -> u16 {
+    HTTP_API_PORT.load(Ordering::Relaxed)
+}
+
+pub fn get_engine_startup_error() -> Option<&'static str> {
+    ENGINE_STARTUP_ERROR.get().map(|s| s.as_str())
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct StreamStatus {
@@ -193,6 +205,21 @@ pub fn get_cache_dir() -> PathBuf {
     crate::state::get_app_storage_root().join("cache").join("torrents")
 }
 
+fn build_session_options(disable_dht_persistence: bool, ratelimits: LimitsConfig) -> SessionOptions {
+    SessionOptions {
+        listen_port_range: Some(42000..42010),
+        enable_upnp_port_forwarding: true,
+        peer_opts: Some(librqbit::PeerConnectionOptions {
+            connect_timeout: Some(Duration::from_secs(10)),
+            read_write_timeout: Some(Duration::from_secs(30)),
+            ..Default::default()
+        }),
+        disable_dht_persistence,
+        ratelimits,
+        ..Default::default()
+    }
+}
+
 /// Initializes the background tokio runtime and starts librqbit 8.0 + HttpApi server.
 /// Configures low-memory footprint (<150 MB RAM) for the 2 GB Surface RT.
 pub fn start_engine() -> Result<(), String> {
@@ -204,13 +231,13 @@ pub fn start_engine() -> Result<(), String> {
 
     log_info(&format!("Streaming cache directory: {}", cache_dir.display()));
 
-    // Start local proxy/remux server for MKV playback & Media Foundation (:3031)
+    // Start local proxy/remux server for MKV playback & Media Foundation (:3031 or fallback)
     if let Err(e) = remux_proxy::start_proxy_server() {
         log_err(&format!("Notice starting remux proxy: {}", e));
     }
 
     let (cmd_tx, cmd_rx) = channel::<EngineCommand>();
-    let _ = ENGINE_TX.set(cmd_tx);
+    let (init_tx, init_rx) = channel::<Result<(), String>>();
 
     std::thread::Builder::new()
         .name("librqbit-engine".to_string())
@@ -222,7 +249,9 @@ pub fn start_engine() -> Result<(), String> {
             {
                 Ok(rt) => rt,
                 Err(e) => {
-                    log_err(&format!("Failed to start tokio runtime: {}", e));
+                    let msg = format!("Failed to start tokio runtime: {}", e);
+                    log_err(&msg);
+                    let _ = init_tx.send(Err(msg));
                     return;
                 }
             };
@@ -242,37 +271,57 @@ pub fn start_engine() -> Result<(), String> {
                 };
                 log_torrent(&format!("[CACHE_CONFIG] Applied torrent limits: max_connections={}, download_limit_kbps={}", max_conn, cache_cfg.download_limit_kbps));
 
-                let session_opts = SessionOptions {
-                    listen_port_range: Some(42000..42010),
-                    enable_upnp_port_forwarding: true,
-                    peer_opts: Some(librqbit::PeerConnectionOptions {
-                        connect_timeout: Some(Duration::from_secs(10)),
-                        read_write_timeout: Some(Duration::from_secs(30)),
-                        ..Default::default()
-                    }),
-                    disable_dht_persistence: false,
-                    ratelimits: ratelimits.clone(),
-                    ..Default::default()
-                };
-
-                let session = match Session::new_with_opts(cache_dir.clone(), session_opts).await {
+                let session = match Session::new_with_opts(
+                    cache_dir.clone(),
+                    build_session_options(false, ratelimits.clone()),
+                )
+                .await
+                {
                     Ok(s) => s,
-                    Err(e) => {
-                        log_err(&format!("Error creating librqbit Session: {}", e));
-                        return;
+                    Err(first_err) => {
+                        log_err(&format!(
+                            "Error creating librqbit Session with persistent DHT ({}); retrying with DHT persistence disabled...",
+                            first_err
+                        ));
+                        match Session::new_with_opts(
+                            cache_dir.clone(),
+                            build_session_options(true, ratelimits.clone()),
+                        )
+                        .await
+                        {
+                            Ok(s) => s,
+                            Err(second_err) => {
+                                let msg = format!("Error creating librqbit Session: {}", second_err);
+                                log_err(&msg);
+                                let _ = init_tx.send(Err(msg));
+                                return;
+                            }
+                        }
                     }
                 };
 
                 log_torrent("librqbit Session initialized successfully (RAM optimized).");
 
-                // Start HTTP API server on 127.0.0.1:3030
+                // Start HTTP API server on 127.0.0.1:3030 (or ephemeral fallback if occupied)
                 let api = Api::new(session.clone(), None, None);
                 let http_api = HttpApi::new(api, None);
 
-                let bind_addr = "127.0.0.1:3030";
-                match tokio::net::TcpListener::bind(bind_addr).await {
+                let listener = match tokio::net::TcpListener::bind("127.0.0.1:3030").await {
+                    Ok(l) => Ok(l),
+                    Err(first_err) => {
+                        log_err(&format!(
+                            "Port 3030 unavailable for HTTP API ({}), falling back to ephemeral port...",
+                            first_err
+                        ));
+                        tokio::net::TcpListener::bind("127.0.0.1:0").await
+                    }
+                };
+
+                match listener {
                     Ok(listener) => {
-                        log_torrent(&format!("HTTP Range server active on http://{}", bind_addr));
+                        let bound_port = listener.local_addr().map(|a| a.port()).unwrap_or(3030);
+                        HTTP_API_PORT.store(bound_port, Ordering::Relaxed);
+                        log_torrent(&format!("HTTP Range server active on http://127.0.0.1:{}", bound_port));
                         tokio::spawn(async move {
                             if let Err(e) = http_api.make_http_api_and_run(listener, None).await {
                                 log_err(&format!("Error in librqbit HttpApi: {}", e));
@@ -280,9 +329,14 @@ pub fn start_engine() -> Result<(), String> {
                         });
                     }
                     Err(e) => {
-                        log_err(&format!("Could not bind port 3030 for HTTP API: {}", e));
+                        let msg = format!("Could not bind local port for HTTP API: {}", e);
+                        log_err(&msg);
+                        let _ = init_tx.send(Err(msg));
+                        return;
                     }
                 }
+
+                let _ = init_tx.send(Ok(()));
 
                 // Command loop from UI
                 while let Ok(cmd) = cmd_rx.recv() {
@@ -304,7 +358,21 @@ pub fn start_engine() -> Result<(), String> {
         })
         .map_err(|e| format!("Error spawning librqbit thread: {}", e))?;
 
-    Ok(())
+    match init_rx.recv_timeout(Duration::from_secs(15)) {
+        Ok(Ok(())) => {
+            let _ = ENGINE_TX.set(cmd_tx);
+            Ok(())
+        }
+        Ok(Err(e)) => {
+            let _ = ENGINE_STARTUP_ERROR.set(e.clone());
+            Err(e)
+        }
+        Err(_) => {
+            let msg = "Torrent engine initialization timed out".to_string();
+            let _ = ENGINE_STARTUP_ERROR.set(msg.clone());
+            Err(msg)
+        }
+    }
 }
 
 async fn stop_previous_torrent(session: &std::sync::Arc<Session>) {
@@ -566,7 +634,7 @@ async fn handle_start_stream(
         || file_name.to_lowercase().ends_with(".webm");
     crate::player::set_stream_container_info(is_mkv, 0);
 
-    let stream_url = format!("http://127.0.0.1:3030/torrents/{}/stream/{}", torrent_id, chosen_idx);
+    let stream_url = format!("http://127.0.0.1:{}/torrents/{}/stream/{}", http_api_port(), torrent_id, chosen_idx);
 
     // Track active folder for protected cache cleaning
     let active_torrent_folder = get_cache_dir().join(&file_name);
@@ -811,7 +879,7 @@ async fn handle_start_stream(
 
     // Return the local remux/proxy URL always ending in .mp4 for Windows RT Media Foundation MPEG4ByteStreamHandler
     let stream_name = if is_mkv { "mkv_stream.mp4" } else { "mp4_stream.mp4" };
-    let proxy_url = format!("http://127.0.0.1:3031/play/{}/{}/{}", torrent_id, chosen_idx, stream_name);
+    let proxy_url = format!("http://127.0.0.1:{}/play/{}/{}/{}", remux_proxy::proxy_port(), torrent_id, chosen_idx, stream_name);
     log_torrent(&format!("[PROXY] Local streaming URL for embedded player: {}", proxy_url));
 
     Ok(proxy_url)
@@ -849,7 +917,12 @@ pub fn start_stream(
 ) -> Result<String, String> {
     let tx = match ENGINE_TX.get() {
         Some(t) => t,
-        None => return Err("Torrent engine has not been started".to_string()),
+        None => {
+            let msg = get_engine_startup_error()
+                .unwrap_or("Torrent engine has not been started")
+                .to_string();
+            return Err(msg);
+        }
     };
 
     let (resp_tx, resp_rx) = channel::<Result<String, String>>();
@@ -883,7 +956,12 @@ pub fn start_stream_sync(
 pub fn clear_cache() -> Result<usize, String> {
     let tx = match ENGINE_TX.get() {
         Some(t) => t,
-        None => return Err("Torrent engine has not been started".to_string()),
+        None => {
+            let msg = get_engine_startup_error()
+                .unwrap_or("Torrent engine has not been started")
+                .to_string();
+            return Err(msg);
+        }
     };
 
     let (resp_tx, resp_rx) = channel::<Result<usize, String>>();
